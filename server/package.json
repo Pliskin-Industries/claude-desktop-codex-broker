@@ -1,0 +1,16 @@
+{
+  "name": "codex-broker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MCP server that lets Claude delegate coding tasks to OpenAI's Codex CLI as fire-and-poll background jobs.",
+  "type": "module",
+  "engines": { "node": ">=18.18" },
+  "bin": { "codex-broker": "server.mjs" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node test/run-tests.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
