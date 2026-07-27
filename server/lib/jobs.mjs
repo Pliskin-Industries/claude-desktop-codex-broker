@@ -17,9 +17,10 @@
 //   * DIRECT (mode:"direct")  — synchronous tools (codex_task, synchronous
 //     codex_review, codex_resume). Spawn codex, wait for it, return the result.
 //   * BACKGROUND (mode:"background") — codex_start and
-//     codex_review(background:true). Spawn codex detached + unref'd, return the
-//     job_id immediately; exit/error handlers in the broker record completion
-//     to disk. Tradeoff vs the old runner model: if the broker process itself
+//     codex_review(background:true). Spawn codex unref'd (detached on POSIX
+//     only — see the spawn-site comment for why detached must stay false on
+//     Windows), return the job_id immediately; exit/error handlers in the
+//     broker record completion to disk. Tradeoff vs the old runner model: if the broker process itself
 //     restarts mid-job, the in-flight job may be orphaned (its exit status is
 //     never recorded, surfacing as "process exited without recording status")
 //     — completed-job results still persist on disk.
@@ -284,9 +285,15 @@ export function startJob({ jobClass, builder, cwd, promptText, model, sandbox, e
   try {
     child = spawn(bin, a.argv, {
       cwd,
-      // detached => own process group on POSIX (for killTree via -pid) and no
-      // tie to the broker's console on Windows (taskkill /T handles the tree).
-      detached: true,
+      // detached => own process group on POSIX (for killTree via -pid). On
+      // Windows detached MUST stay false (matching the sync path): detached
+      // launches codex with DETACHED_PROCESS — no console at all — so every
+      // console child codex spawns (powershell per command) allocates a fresh
+      // VISIBLE console window, one flash per command (v1.4.0 regression).
+      // With detached:false + windowsHide, codex gets a hidden console its
+      // children inherit silently. taskkill /T handles tree-kill, and unref()
+      // works without detached, so nothing else is lost on Windows.
+      detached: !IS_WINDOWS,
       stdio: [promptFd, logFd, logFd],
       env,
       windowsHide: true,

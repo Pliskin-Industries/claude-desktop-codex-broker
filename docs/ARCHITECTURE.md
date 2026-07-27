@@ -12,7 +12,9 @@ Three actors with strictly separated capabilities. The separation is not stylist
 
 ## Why the broker does git, not Codex
 
-Verified empirically: the Codex sandbox on Windows runs as a separate OS user (`CodexSandboxOnline`) and blocks the credential subsystem entirely — even *unauthenticated* HTTPS fails inside it (`SEC_E_NO_CREDENTIALS` from schannel), and `gh.exe` cannot be launched. This turns out to be the right security shape: the AI that writes code never holds credentials; the push is a deterministic, narrow, explicitly-invoked operation.
+Verified empirically: the Codex sandbox on Windows runs as a separate OS user (`CodexSandboxOnline` / `CodexSandboxOffline`) and blocks the credential subsystem entirely — even *unauthenticated* HTTPS fails inside it (`SEC_E_NO_CREDENTIALS` from schannel), and `gh.exe` cannot be launched. This turns out to be the right security shape: the AI that writes code never holds credentials; the push is a deterministic, narrow, explicitly-invoked operation.
+
+Also verified (v1.4.1): the sandbox write-protects the *existing* repo's `.git` directory (deny ACLs at session start), so Codex cannot commit in the user's clone at all — it clones the repo into its own temp dir (a session-created `.git` is writable), commits there, and the broker pushes from that clone path. See LESSONS.md #8.
 
 Consequence for repos: files Codex creates are owned by the sandbox user, which trips git's "dubious ownership" protection for the broker/user. The broker injects a `safe.directory` exception scoped to exactly the target directory per invocation (via `GIT_CONFIG_*` env vars), so no global git config is needed.
 
@@ -44,7 +46,7 @@ The desktop bridge caps a single MCP tool call at ~60 seconds. Verified behavior
 
 Two non-obvious properties of running inside Claude Desktop's extension host, both verified the hard way:
 
-1. `process.execPath` is the Claude Desktop executable, not Node — and on the Microsoft Store build `ELECTRON_RUN_AS_NODE` is dead (fuse burned), so respawning it *always* launches the GUI app. Since v1.4.0 the broker spawns Codex directly for **both** sync and background work (background: detached + unref'd, exit recorded by broker-side handlers; a broker restart mid-job may orphan an in-flight job, completed results persist on disk).
+1. `process.execPath` is the Claude Desktop executable, not Node — and on the Microsoft Store build `ELECTRON_RUN_AS_NODE` is dead (fuse burned), so respawning it *always* launches the GUI app. Since v1.4.0 the broker spawns Codex directly for **both** sync and background work (background: unref'd, detached on POSIX only, exit recorded by broker-side handlers; a broker restart mid-job may orphan an in-flight job, completed results persist on disk). v1.4.1: `detached` must stay **false on Windows** for background jobs too — `DETACHED_PROCESS` gives Codex no console, so every console child it spawns (powershell per command) allocates a fresh *visible* console window, one flash per command; `detached:false` + `windowsHide` gives Codex a hidden console its children inherit silently.
 2. Extension updates do not restart the running server process. The version label updates while old code keeps serving. Reliable update cycle: remove the extension → quit the app from the system tray → reopen → install the new file.
 
 ## Windows binary resolution

@@ -113,13 +113,16 @@ Summary of the loop:
    and ask the user to add one — do not delegate write work with no sync path.
 2. **Push current state.** Before delegating, commit and push your container's
    current work so Codex pulls a clean, current base.
-3. **Instruct Codex in its prompt** to: work on the user's local clone; commit
-   to a branch named `codex/<task-slug>`. Codex must NOT pull or push — its
-   sandbox has no credential access. YOU sync: `git_pull` before delegating,
-   `git_push(cwd, "codex/<slug>")` after Codex commits. Codex must never
-   commit to `main`/`master` directly.
-4. **Dirty local tree.** Tell Codex: if the local working tree is dirty, stash or
-   abort and report — never discard or force over the user's uncommitted work.
+3. **Instruct Codex in its prompt** to: clone the user's local repo into its
+   own temp dir and work THERE (the sandbox write-protects the existing
+   clone's `.git` — see Failure handling); commit to a branch named
+   `codex/<task-slug>` in that temp clone with `origin` set to the GitHub
+   URL. Codex must NOT pull or push — its sandbox has no credential access.
+   YOU sync: `git_pull` before delegating, `git_push(<temp-clone-path>,
+   "codex/<slug>")` after Codex commits. Codex must never commit to
+   `main`/`master` directly.
+4. **Dirty local tree.** Tell Codex: if the user's working tree is dirty, stop
+   and report — never discard or force over the user's uncommitted work.
 5. **Push via broker, review in the cloud.** After Codex commits, call
    `git_push(cwd, "codex/<slug>")`. Then in the cloud: pull the branch, inspect
    `git diff main...codex/<slug>`, run the tests yourself, then merge — or send
@@ -144,6 +147,15 @@ Summary of the loop:
   `codex_status` on jobs you had in flight; before re-delegating an orphaned
   job, inspect the repo branch for partial commits Codex may have already
   made.
+- **`.git` write-protection (v1.4.1, verified in field testing).** The Codex
+  sandbox deny-ACLs the existing repo's `.git` at session start: Codex can
+  edit the working tree but CANNOT branch, stage, or commit in the user's
+  clone — every git write fails with `.git/index.lock: Permission denied`.
+  Do not fight it and do not ask for escalation. The working pattern: Codex
+  clones the repo into its own temp dir (a session-created `.git` IS
+  writable), commits there, sets `origin` to the GitHub URL; you push from
+  the clone path via `git_push(<temp-clone-path>, branch)`. Details in
+  `references/git-protocol.md`.
 - **Partial work on disk.** Inspect the branch: `git status` and
   `git diff main...codex/<slug>`. Decide from what actually landed, not from the
   truncated tool output. Resume the thread with `codex_resume` to finish, or take

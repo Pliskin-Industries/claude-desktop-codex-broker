@@ -1,6 +1,6 @@
 # Field-Testing Lessons
 
-Six real defects found and fixed while bringing this system up on a Windows 11 machine with the Microsoft Store build of Claude Desktop, in one debugging session. Recorded because every one of them produces confusing symptoms that would cost the next person hours.
+Eight real defects found and fixed while bringing this system up on a Windows 11 machine with the Microsoft Store build of Claude Desktop. Recorded because every one of them produces confusing symptoms that would cost the next person hours.
 
 ## 1. The extension host is Electron, and `process.execPath` is a trap
 
@@ -49,6 +49,22 @@ Six real defects found and fixed while bringing this system up on a Windows 11 m
 **Cause:** the desktop bridge's per-call ceiling, independent of any timeout parameter the broker accepts.
 
 **Fix (procedural):** synchronous `codex_task` only for sub-45-second jobs; everything else goes background (`codex_start` → poll → `codex_result`). Jobs persist on disk, so a caller-side timeout loses nothing — recover via `codex_status`.
+
+## 7. `detached: true` on Windows = a console-window storm from the child's children
+
+**Symptom:** v1.4.0 background jobs completed correctly (exit 0, files written), but many console windows flashed on screen while the job ran — one per command Codex executed.
+
+**Cause:** the background path spawned `codex.exe` with `detached: true`, which on Windows means `DETACHED_PROCESS` — the child gets *no console at all*. `windowsHide` hides only codex's own (nonexistent) window; every console child codex then spawns (powershell.exe per command execution) has no parent console to attach to, so Windows allocates a fresh **visible** console for each. The sync path never flashed because it already used `detached: !IS_WINDOWS` — `windowsHide` alone gives codex a `CREATE_NO_WINDOW` hidden console that its children inherit silently. This class of bug is invisible to any Linux/macOS CI; only a human watching a Windows screen catches it.
+
+**Fix (v1.4.1):** background spawn uses `detached: !IS_WINDOWS`, exactly like the sync path. Nothing is lost on Windows: `unref()` works without `detached`, and tree-kill already goes through `taskkill /T`. POSIX keeps `detached: true` for process-group kills via `-pid`.
+
+## 8. Codex cannot commit in an existing repo — the sandbox write-protects `.git`
+
+**Symptom:** a delegation asked Codex to `git add -A && git commit`; the working-tree file copies succeeded, but every git write failed with `fatal: Unable to create '.git/index.lock': Permission denied`, with no pre-existing lock file.
+
+**Cause:** Codex CLI's workspace-write sandbox deny-ACLs the repo's `.git` directory for the sandbox user at session start (visible via `Get-Acl .git`: Deny Write/Delete ACEs for the sandbox user's SID, which take precedence over its Allow entries). Working-tree writes are permitted; history writes are not. The "Codex commits locally, broker pushes" loop assumed `.git` was writable — on current Codex builds it is not.
+
+**Fix (procedural, verified):** a `.git` created *by* the session is not protected. Have Codex `git clone --no-hardlinks` the repo into its temp directory, commit there, point `origin` at the GitHub URL, and call broker `git_push` with the temp clone's path as `cwd`. Sync the user's primary clone afterward (`git pull --ff-only`, or `git reset --hard origin/<branch>` if its tree was left dirty). Longer-term fix: a broker-side `git_commit` tool so commits, like pushes, happen outside the sandbox.
 
 ## Meta-lesson
 

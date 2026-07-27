@@ -47,32 +47,48 @@ Codex runs on the user's local clone. Put these git instructions verbatim into
 the delegation prompt (adapt the slug and branch):
 
 IMPORTANT (verified in field testing): Codex's sandbox runs as a separate OS
-user with no network and no credential access. Codex can init/branch/commit
-locally but can NEVER fetch, pull, or push. All remote operations go through
-the broker tools (`git_pull`, `git_push`, `gh_repo_create`), which you call
-yourself. Call `git_pull(cwd)` BEFORE delegating so Codex starts from current
-state.
+user with no network and no credential access. Codex can NEVER fetch, pull, or
+push. All remote operations go through the broker tools (`git_pull`,
+`git_push`, `gh_repo_create`), which you call yourself. Call `git_pull(cwd)`
+BEFORE delegating so Codex starts from current state.
+
+IMPORTANT (verified in field testing, v1.4.1): the sandbox also
+**write-protects the existing repo's `.git` directory** (deny ACLs set at
+session start), so Codex cannot branch, stage, or commit in the user's clone —
+every git write fails with `.git/index.lock: Permission denied`. Working-tree
+writes are fine. The commit path that works: Codex `git clone`s the repo into
+its own temp directory (a `.git` created by the session is NOT protected),
+does the scoped work and commits **there**, and sets `origin` to the GitHub
+URL; you then call `git_push(<temp-clone-path>, "codex/<task-slug>")`. After
+the push, sync the user's primary clone with `git_pull(cwd)` — or, if its
+tree was left dirty, ask the user to `git reset --hard origin/<branch>`.
 
 ```
 Git protocol — follow exactly:
-1. If the working tree is dirty (`git status --short` non-empty), STOP. Either
-   `git stash push -u -m "pre-codex autostash"` and note it, or abort and report.
-   Never discard, reset, or force over uncommitted local work.
-2. `git checkout -b codex/<task-slug>` (or checkout the branch if it already exists).
+1. If the working tree of the primary clone is dirty (`git status --short`
+   non-empty), STOP and report. Never discard, reset, or force over
+   uncommitted local work.
+2. `git clone --no-hardlinks <primary-clone-path> <your-temp-dir>\<task-slug>`
+   and work in that clone. (You cannot write .git in the primary clone; a
+   clone you create yourself is fully writable.) In the clone:
+   `git checkout -b codex/<task-slug>`, and point origin at GitHub:
+   `git remote set-url origin <github-url>`.
    Do NOT fetch, pull, or push — you have no network or credential access;
    the orchestrator handles all remote sync.
-3. Do the scoped work. Stay inside the files-in-scope list.
+3. Do the scoped work in the temp clone. Stay inside the files-in-scope list.
 4. Run the project's test command. If tests fail, fix within scope or stop and
    report — do NOT commit failing work.
 5. `git add <only in-scope paths>` then commit with a clear message.
 6. Do not push. Never commit to <integration-branch> directly.
-7. Report: branch name, commit SHAs, files touched, test results.
+7. Report: the temp clone's absolute path, branch name, commit SHAs, files
+   touched, test results.
 ```
 
 ## Step 3 — Review in the cloud
 
-Once Codex reports its commit, push the branch yourself via the broker:
-`git_push(cwd, "codex/<task-slug>")`. Then:
+Once Codex reports its commit, push the branch yourself via the broker —
+from the temp clone Codex reported, not the primary clone:
+`git_push(<temp-clone-path>, "codex/<task-slug>")`. Then:
 
 ```bash
 git -C <cwd> fetch origin
