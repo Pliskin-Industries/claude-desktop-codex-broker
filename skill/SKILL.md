@@ -136,6 +136,14 @@ Summary of the loop:
   work may be running or partially applied. For background jobs, check
   `codex_status` before any retry. Re-firing a live job duplicates work and can
   corrupt the branch.
+- **App/broker restarts (v1.4.0+).** Background jobs are direct-spawned,
+  detached children of the broker; a Claude Desktop restart or extension
+  update mid-job can orphan an in-flight background job — its status then
+  reads `process exited without recording status` once the pid is gone.
+  Completed-job results always persist on disk. After any app restart, run
+  `codex_status` on jobs you had in flight; before re-delegating an orphaned
+  job, inspect the repo branch for partial commits Codex may have already
+  made.
 - **Partial work on disk.** Inspect the branch: `git status` and
   `git diff main...codex/<slug>`. Decide from what actually landed, not from the
   truncated tool output. Resume the thread with `codex_resume` to finish, or take

@@ -44,7 +44,7 @@ The desktop bridge caps a single MCP tool call at ~60 seconds. Verified behavior
 
 Two non-obvious properties of running inside Claude Desktop's extension host, both verified the hard way:
 
-1. `process.execPath` is the Claude Desktop executable, not Node. Respawning it without `ELECTRON_RUN_AS_NODE=1` launches the GUI app. The broker spawns Codex directly for sync work and sets the env var for its background runner.
+1. `process.execPath` is the Claude Desktop executable, not Node — and on the Microsoft Store build `ELECTRON_RUN_AS_NODE` is dead (fuse burned), so respawning it *always* launches the GUI app. Since v1.4.0 the broker spawns Codex directly for **both** sync and background work (background: detached + unref'd, exit recorded by broker-side handlers; a broker restart mid-job may orphan an in-flight job, completed results persist on disk).
 2. Extension updates do not restart the running server process. The version label updates while old code keeps serving. Reliable update cycle: remove the extension → quit the app from the system tray → reopen → install the new file.
 
 ## Windows binary resolution

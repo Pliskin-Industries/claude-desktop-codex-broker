@@ -91,7 +91,7 @@ function renderSyncOutcome(kind, job, { timedOut, timeoutSeconds }) {
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "codex-broker", version: "1.0.0" },
+  { name: "codex-broker", version: "1.4.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -123,7 +123,7 @@ const TOOLS = [
   {
     name: "codex_start",
     description:
-      "Start a Codex coding task in the background (detached) and return a job_id immediately. Poll with codex_status and fetch the outcome with codex_result. Survives broker restarts.",
+      "Start a Codex coding task in the background (codex spawned directly, detached) and return a job_id immediately. Poll with codex_status and fetch the outcome with codex_result. Completed results persist on disk; a broker restart mid-job may orphan the in-flight job.",
     inputSchema: {
       type: "object",
       properties: {

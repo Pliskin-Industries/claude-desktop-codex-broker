@@ -326,51 +326,54 @@ async function main() {
     assert(/status: failed \(canceled\)/.test(st.text), `expected canceled, got: ${st.text}`);
   });
 
-  await test("sync task runs DIRECT: no runner, no command.json, no runner-boot.log", async () => {
+  await test("ALL jobs spawn codex directly: no runner artifacts anywhere", async () => {
     const r = await client.call("codex_task", { prompt: "direct spawn check", cwd: workDir });
     assert(!r.isError && /Status: completed/.test(r.text), `sync task failed: ${r.text}`);
-    // Inspect every direct-mode job dir and confirm the runner never ran.
+    // Inspect every job dir (direct AND background) and confirm no runner ever ran.
     const jobsRoot = path.join(brokerHome, "jobs");
     const dirs = fs.readdirSync(jobsRoot);
-    let directCount = 0;
+    let count = 0;
     for (const d of dirs) {
       const metaPath = path.join(jobsRoot, d, "meta.json");
       if (!fs.existsSync(metaPath)) continue;
-      const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
-      if (meta.mode !== "direct") continue;
-      directCount++;
-      assert(!fs.existsSync(path.join(jobsRoot, d, "command.json")), `direct job ${d} wrote command.json`);
-      assert(!fs.existsSync(path.join(jobsRoot, d, "runner-boot.log")), `direct job ${d} spawned a runner`);
+      count++;
+      assert(!fs.existsSync(path.join(jobsRoot, d, "command.json")), `job ${d} wrote command.json (runner-era artifact)`);
+      assert(!fs.existsSync(path.join(jobsRoot, d, "runner-boot.log")), `job ${d} spawned a runner`);
     }
-    assert(directCount > 0, "no direct-mode job dirs found");
+    assert(count > 0, "no job dirs found");
   });
 
-  await test("background job records runner instrumentation (runner-boot.log)", async () => {
-    const s = await client.call("codex_start", { prompt: "SLEEP=1 instrumented", cwd: workDir });
+  await test("background job spawns codex DIRECTLY and records completion from the broker", async () => {
+    const s = await client.call("codex_start", { prompt: "SLEEP=1 direct background", cwd: workDir });
     const jobId = extractJobId(s.text);
     assert(jobId, `no job_id: ${s.text}`);
     const jobDir = path.join(brokerHome, "jobs", jobId);
-    // command.json is written for background jobs.
-    assert(fs.existsSync(path.join(jobDir, "command.json")), "background job missing command.json");
-    // runner-boot.log should appear and contain the boot breadcrumb.
-    let boot = "";
-    for (let i = 0; i < 20; i++) {
-      const p = path.join(jobDir, "runner-boot.log");
+
+    // The broker's direct-spawn breadcrumb (mode=background) goes to output.log.
+    const out = fs.readFileSync(path.join(jobDir, "output.log"), "utf8");
+    assert(/\[broker\] direct spawn of .+ \(mode=background\)/.test(out), `missing direct-spawn breadcrumb: ${JSON.stringify(out)}`);
+
+    // meta.pid is the codex process itself (not a runner), and it is alive now.
+    const meta = JSON.parse(fs.readFileSync(path.join(jobDir, "meta.json"), "utf8"));
+    assert(meta.mode === "background", `expected mode background, got ${meta.mode}`);
+    assert(Number.isInteger(meta.pid) && meta.pid > 0, `bad codex pid in meta: ${meta.pid}`);
+    assert(meta.runnerExecPath === undefined, "meta still records runnerExecPath (runner-era field)");
+
+    // The broker-side exit handler must write the exit file when codex finishes.
+    let exitVal = null;
+    for (let i = 0; i < 30; i++) {
+      const p = path.join(jobDir, "exit");
       if (fs.existsSync(p)) {
-        boot = fs.readFileSync(p, "utf8");
-        if (/runner started/.test(boot)) break;
+        exitVal = fs.readFileSync(p, "utf8").trim();
+        break;
       }
       await sleep(200);
     }
-    assert(/runner started/.test(boot), `runner-boot.log missing boot line: ${JSON.stringify(boot)}`);
-    // output.log should carry the "runner alive" breadcrumb.
-    let out = "";
-    for (let i = 0; i < 20; i++) {
-      out = fs.readFileSync(path.join(jobDir, "output.log"), "utf8");
-      if (/runner alive/.test(out)) break;
-      await sleep(200);
-    }
-    assert(/runner alive, spawning/.test(out), `output.log missing runner-alive line: ${JSON.stringify(out)}`);
+    assert(exitVal === "0", `expected exit file "0", got ${JSON.stringify(exitVal)}`);
+
+    const fin = await client.call("codex_result", { job_id: jobId });
+    assert(!fin.isError && /status: completed/.test(fin.text), `background result not completed: ${fin.text}`);
+    assert(/Task complete \(mock\)/.test(fin.text), `no final message: ${fin.text}`);
   });
 
   await test("review (sync) returns findings", async () => {

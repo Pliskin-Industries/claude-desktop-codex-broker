@@ -125,8 +125,8 @@ export function jobsDir() {
 export class ValidationError extends Error {}
 
 // Build a helpful message when a codex process fails to spawn, naming the
-// resolved binary and giving OS-specific guidance. Shared by the direct sync
-// spawn path and the background runner.
+// resolved binary and giving OS-specific guidance. Shared by the sync and
+// background spawn paths.
 export function spawnFailureMessage(bin, err) {
   const code = err && err.code ? ` (${err.code})` : "";
   let msg = `failed to start codex binary "${bin}"${code}: ${err && err.message ? err.message : err}.`;

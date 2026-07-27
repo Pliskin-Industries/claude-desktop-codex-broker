@@ -8,7 +8,7 @@ Six real defects found and fixed while bringing this system up on a Windows 11 m
 
 **Cause:** inside an MCPB extension, `process.execPath` points at the Claude Desktop executable, not Node. The broker's detached job runner respawned it expecting a Node runtime and got a GUI app instead.
 
-**Fix:** spawn Codex directly (no intermediate runtime respawn) for synchronous work; set `ELECTRON_RUN_AS_NODE=1` and capture a `runner-boot.log` for the background runner. Bonus fix found in the same pass: POSIX negative-pid kills never worked on Windows — use `taskkill /pid <pid> /T /F`.
+**Fix (two stages):** v1.1.1 spawned Codex directly (no intermediate runtime respawn) for synchronous work, and set `ELECTRON_RUN_AS_NODE=1` + captured a `runner-boot.log` for the background runner. Field testing then showed the Microsoft Store build **ignores `ELECTRON_RUN_AS_NODE` entirely** (the Electron fuse is burned), so background jobs still launched a phantom GUI and died "without recording status" with an empty `output.log`. v1.4.0 therefore removed the runner altogether: background jobs also spawn `codex.exe` directly (detached + unref'd, exit recorded by broker-side handlers). Tradeoff: a broker restart mid-job may orphan an in-flight background job; completed results still persist on disk. Bonus fix found in the same pass: POSIX negative-pid kills never worked on Windows — use `taskkill /pid <pid> /T /F`.
 
 ## 2. npm's `codex` shim is unspawnable on Windows
 

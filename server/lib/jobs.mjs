@@ -1,34 +1,38 @@
 // Job lifecycle, persisted under $CODEX_BROKER_HOME/jobs/<job_id>/.
 // Each job dir contains:
 //   meta.json         static info + flags (mode/canceled/timedOut/pid)
-//   command.json      what the background runner should execute (background only)
 //   prompt.txt        prompt/focus text (fed to codex via stdin)
 //   output.log        combined stdout+stderr of codex (+ diagnostics)
 //   last-message.txt  codex --output-last-message target
 //   exit              exit code / marker, written when codex finishes
-//   runner-boot.log   background only: the runner process's own stdout/stderr
 //
-// There are two execution modes:
-//   * DIRECT (mode:"direct")  — used by the synchronous tools (codex_task,
-//     synchronous codex_review, codex_resume). The server spawns codex.exe
-//     DIRECTLY (no intermediate node/runner process) and waits. This avoids
-//     re-invoking the host runtime, which under a Claude Desktop MCPB (Electron)
-//     host would relaunch the Electron app instead of node.
-//   * BACKGROUND (mode:"background") — used by codex_start and
-//     codex_review(background:true). The server spawns a detached runner
-//     (lib/runner.mjs) that outlives a broker crash/restart.
+// BOTH execution modes spawn codex.exe DIRECTLY from the broker process —
+// there is never an intermediate node/runner respawn. This is deliberate: under
+// a Claude Desktop MCPB (Electron) host, process.execPath is the Claude app
+// binary, and on some builds (e.g. the MS Store package) the ELECTRON_RUN_AS_NODE
+// fuse is burned, so respawning process.execPath ALWAYS launches the GUI app —
+// there is no way to get a node runtime out of it. (v1.3.x used a detached
+// lib/runner.mjs for background jobs; v1.4.0 removed it for this reason.)
+//
+//   * DIRECT (mode:"direct")  — synchronous tools (codex_task, synchronous
+//     codex_review, codex_resume). Spawn codex, wait for it, return the result.
+//   * BACKGROUND (mode:"background") — codex_start and
+//     codex_review(background:true). Spawn codex detached + unref'd, return the
+//     job_id immediately; exit/error handlers in the broker record completion
+//     to disk. Tradeoff vs the old runner model: if the broker process itself
+//     restarts mid-job, the in-flight job may be orphaned (its exit status is
+//     never recorded, surfacing as "process exited without recording status")
+//     — completed-job results still persist on disk.
 //
 // Status/results are always re-derived from disk; liveness is checked via pid.
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { jobsDir, spawnFailureMessage } from "./util.mjs";
 import { extractResult } from "./codex.mjs";
 
-const RUNNER = fileURLToPath(new URL("./runner.mjs", import.meta.url));
 const IS_WINDOWS = process.platform === "win32";
 
 function generateJobId() {
@@ -244,55 +248,93 @@ export function runSyncJob({ jobClass, builder, cwd, promptText, model, sandbox,
   return { jobId: a.jobId, done };
 }
 
-// BACKGROUND execution: spawn a detached runner that outlives the broker. The
-// runner's own stdout/stderr are captured to runner-boot.log so a silent death
-// (e.g. an Electron host mislaunch) leaves a trace.
+// BACKGROUND execution: spawn codex.exe DIRECTLY from the broker (exactly like
+// the sync path — never an intermediate node/runner respawn, which an Electron
+// host with the ELECTRON_RUN_AS_NODE fuse burned would turn into a GUI app
+// launch). Do not await completion: the child is detached + unref'd so it does
+// not hold the broker open, and exit/error handlers record the exit file,
+// output.log diagnostics, and meta updates. The prompt is fed from prompt.txt
+// via an inherited read fd, so the broker keeps no pipe to the child.
+//
+// Tradeoff (documented in README): the completion handlers live in THIS broker
+// process, so a broker restart mid-job may orphan or kill an in-flight job (no
+// exit file is ever written → codex_status reports "process exited without
+// recording status" once the pid is gone). Completed-job results still persist
+// on disk and remain readable via codex_status / codex_result.
 export function startJob({ jobClass, builder, cwd, promptText, model, sandbox, extra = {} }) {
   const bin = extra.bin;
   const a = createJobArtifacts({ jobClass, builder, cwd, promptText, model, sandbox, bin });
   a.meta.mode = "background";
+  writeMeta(a.metaFile, a.meta);
 
-  const commandFile = path.join(a.dir, "command.json");
-  const command = {
-    bin,
-    argv: a.argv,
-    cwd,
-    promptFile: a.promptFile,
-    outputLog: a.outputLog,
-    exitFile: a.exitFile,
-    metaFile: a.metaFile,
-    env: extra.env || null,
-  };
-  fs.writeFileSync(commandFile, JSON.stringify(command, null, 2));
+  const logFd = fs.openSync(a.outputLog, "a");
+  appendLog(a.outputLog, `[broker] direct spawn of "${bin}" (mode=background) at ${new Date().toISOString()}`);
 
-  const bootLog = path.join(a.dir, "runner-boot.log");
-  const bootFd = fs.openSync(bootLog, "a");
-
-  // Spawn the detached runner. ELECTRON_RUN_AS_NODE=1 forces an Electron-based
-  // host (e.g. Claude Desktop MCPB) to run process.execPath as a plain Node
-  // runtime instead of launching the GUI app. Harmless under real node.
-  const child = spawn(process.execPath, [RUNNER, a.dir], {
-    cwd,
-    detached: true,
-    stdio: ["ignore", bootFd, bootFd],
-    windowsHide: true,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-  });
-  child.on("error", (err) => {
-    appendLog(a.outputLog, `[broker] failed to spawn runner (${process.execPath}): ${err.message}`);
-    writeExitIfAbsent(a.exitFile, "127");
-  });
-  child.unref();
+  // Feed the prompt from the already-written prompt.txt as the child's stdin.
+  let promptFd = "ignore";
   try {
-    fs.closeSync(bootFd);
+    promptFd = fs.openSync(a.promptFile, "r");
   } catch {
-    /* ignore */
+    /* fall back to no stdin */
   }
 
-  a.meta.pid = child.pid; // runner pid (process-group leader)
-  a.meta.runnerExecPath = process.execPath;
+  const env = extra.env ? { ...process.env, ...extra.env } : { ...process.env };
+
+  let child;
+  try {
+    child = spawn(bin, a.argv, {
+      cwd,
+      // detached => own process group on POSIX (for killTree via -pid) and no
+      // tie to the broker's console on Windows (taskkill /T handles the tree).
+      detached: true,
+      stdio: [promptFd, logFd, logFd],
+      env,
+      windowsHide: true,
+    });
+  } catch (err) {
+    appendLog(a.outputLog, `[broker] ${spawnFailureMessage(bin, err)}`);
+    writeExitIfAbsent(a.exitFile, "127");
+    closeFds(logFd, promptFd);
+    return a.jobId;
+  }
+
+  child.on("error", (err) => {
+    appendLog(a.outputLog, `[broker] ${spawnFailureMessage(bin, err)}`);
+    writeExitIfAbsent(a.exitFile, "127");
+    const meta = readJsonSafe(a.metaFile) || a.meta;
+    meta.endedAt = new Date().toISOString();
+    writeMeta(a.metaFile, meta);
+  });
+
+  child.on("exit", (code, signal) => {
+    const value = code != null ? String(code) : signal ? `signal:${signal}` : "1";
+    writeExitIfAbsent(a.exitFile, value);
+    const meta = readJsonSafe(a.metaFile) || a.meta;
+    meta.endedAt = new Date().toISOString();
+    meta.exitCode = value;
+    writeMeta(a.metaFile, meta);
+  });
+
+  // The child inherited dups of these fds; close the broker's copies so the
+  // only open handles belong to the child.
+  closeFds(logFd, promptFd);
+
+  child.unref(); // never hold the broker's event loop open for a background job
+
+  a.meta.pid = child.pid; // the codex process itself (process-group leader)
   writeMeta(a.metaFile, a.meta);
   return a.jobId;
+}
+
+function closeFds(...fds) {
+  for (const fd of fds) {
+    if (typeof fd !== "number") continue;
+    try {
+      fs.closeSync(fd);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 export function jobExists(jobId) {

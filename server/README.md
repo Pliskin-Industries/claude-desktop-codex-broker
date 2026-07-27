@@ -3,8 +3,9 @@
 A small, production-quality **stdio MCP server** that lets Claude delegate coding
 tasks to **OpenAI's Codex CLI** (`codex`). It solves the timeout problem: long
 Codex runs are executed as **detached, fire-and-poll background jobs** so they
-never hit MCP/tool timeouts, and they **survive broker restarts** (state lives on
-disk; liveness is checked via pid).
+never hit MCP/tool timeouts. Job state lives on disk (liveness is checked via
+pid), so completed results survive broker restarts; see the background-mode
+tradeoff note under "How it works".
 
 Claude asks the broker to run a task; the broker spawns `codex exec` and either
 waits (short tasks) or hands back a `job_id` to poll (long tasks).
@@ -80,21 +81,34 @@ Each job gets a directory under `$CODEX_BROKER_HOME/jobs/<job_id>/` containing
 `meta.json`, `prompt.txt`, `output.log`, `last-message.txt`, and (when finished)
 an `exit` file. There are **two execution modes**:
 
+
+Both modes spawn `codex` **directly** from the broker process — there is never
+an intermediate Node/runner respawn. This matters under a Claude Desktop
+**MCPB (Electron) host**: `process.execPath` there is the Claude app binary,
+and on some builds (e.g. the Microsoft Store package) the `ELECTRON_RUN_AS_NODE`
+fuse is burned, so re-invoking `process.execPath` **always** relaunches the GUI
+app — there is no way to get a Node runtime out of it. (Versions up to 1.3.x
+used a detached `lib/runner.mjs` for background jobs and died exactly this way
+on such hosts; v1.4.0 removed the runner entirely.)
+
 - **Direct (synchronous tools:** `codex_task`, synchronous `codex_review`,
-  `codex_resume`**).** The server spawns `codex` **directly** and waits — there
-  is no intermediate Node/runner process. This matters under a Claude Desktop
-  **MCPB (Electron) host**: re-invoking `process.execPath` would relaunch the
-  Electron app rather than a Node runtime, so keeping the short-path spawn
-  runtime-free avoids that failure mode entirely.
-- **Background (`codex_start`, `codex_review` with `background:true`).** The
-  server spawns a **detached runner** (`lib/runner.mjs`) as a process-group
-  leader (with `ELECTRON_RUN_AS_NODE=1` so an Electron host runs it as Node, and
-  `windowsHide`). The runner launches `codex`, records its exit status, and — so
-  a silent death always leaves a trace — writes boot breadcrumbs to
-  `runner-boot.log`, a `runner alive, spawning <bin>` line to `output.log`, and
-  installs `uncaughtException`/`unhandledRejection` handlers that record an exit
-  marker. Because the runner is detached and `unref`'d, jobs survive a broker (or
-  whole-app) restart; status/result are always re-derived from disk.
+  `codex_resume`**).** Spawn `codex`, wait for it, return the final message.
+- **Background (`codex_start`, `codex_review` with `background:true`).** Spawn
+  `codex` detached and `unref`'d, return a `job_id` immediately. Exit/error
+  handlers **in the broker process** write the `exit` marker, `output.log`
+  diagnostics, and `meta.json` updates when codex finishes; status/result are
+  always re-derived from disk.
+
+  > **Tradeoff (v1.4.0):** because the completion handlers live in the broker
+  > process, a broker (or whole-app) **restart mid-job may orphan or kill an
+  > in-flight background job** — its exit status is never recorded, and once
+  > the pid is gone `codex_status` reports it as failed with *"process exited
+  > without recording status"* (any output codex already wrote to `output.log`
+  > and `last-message.txt` remains readable). **Completed-job results still
+  > persist on disk** across restarts. Previous versions kept in-flight jobs
+  > alive through restarts via the detached runner, but that mechanism cannot
+  > work on Electron hosts with the `ELECTRON_RUN_AS_NODE` fuse burned, and a
+  > background mode that reliably works beats one that silently can't start.
 
 Common to both modes:
 
@@ -188,5 +202,6 @@ npm test          # node test/run-tests.mjs
 
 The suite spawns the real server over stdio JSON-RPC and drives it against a
 mock `codex` (`test/mock-codex`, placed first on `PATH`) — no network needed. It
-covers sync success, sync timeout kill, start→status→result→completion, cancel,
-review, resume, and invalid-sandbox / invalid-cwd rejection.
+covers sync success, sync timeout kill, start→status→result→completion, the
+direct-spawn background model (no runner artifacts, broker-recorded exit),
+cancel, review, resume, and invalid-sandbox / invalid-cwd rejection.
