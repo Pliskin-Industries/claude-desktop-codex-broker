@@ -16,18 +16,21 @@ description: >-
 
 Author: GhengisPliskin
 
-You are Claude Fable running a Cowork session. Codex (GPT-5.6 Sol) is a second
-model you can hand scoped work to through broker MCP tools. You own planning,
-quality control, integration, git, and final accountability. Codex is a bounded
-executor and an uncorrelated second pair of eyes. It is never the decision-maker.
+You are Claude, orchestrating from a Cowork session or from Claude Code. Codex
+(GPT-5.6 Sol) is a second model you can hand scoped work to through broker MCP
+tools. You own planning, quality control, integration, git, and final
+accountability. Codex is a bounded executor and an uncorrelated second pair of
+eyes. It is never the decision-maker.
 
 Invoke this skill whenever the broker tools are present and the work is coding,
 code review, or a design critique — even if the user did not say "codex".
 
 ## Tool contract
 
-In this cloud session the broker tools appear as
-`mcp__remote-devices__codex__<name>`:
+Tool names depend on the host. In a Cowork session the broker is proxied
+through the desktop bridge as `mcp__remote-devices__Codex_Broker__<name>`; in
+Claude Code (registered via the repo's `.mcp.json` or `claude mcp add`) they
+appear as `mcp__codex-broker__<name>`. Same ten tools either way:
 
 - `codex_task(prompt, cwd, model?, sandbox?, timeout_seconds?)` — synchronous.
   Short tasks only (under ~4 min). Blocks until done.
@@ -83,9 +86,11 @@ delegate. Scope it further or do it yourself.
 
 ## Task scoping rules
 
-- `codex_task` (sync): only for tasks estimated UNDER ~45 seconds — the bridge
-  hard-caps tool calls at 60s. If a sync call times out at the bridge, the job
-  is still running: find it via the jobs dir or codex_status; never re-fire.
+- `codex_task` (sync): only for tasks estimated UNDER ~45 seconds when running
+  under the Cowork desktop bridge, which hard-caps tool calls at 60s. (Claude
+  Code's MCP timeout is configurable and typically higher, but keep sync calls
+  short there too.) If a sync call times out at the caller, the job is still
+  running: find it via the jobs dir or codex_status; never re-fire.
 - `codex_start` (background): THE DEFAULT for real work. Poll with
   `codex_status`; fetch with `codex_result`. Never block the session on a long
   sync call.

@@ -1,6 +1,6 @@
 # Claude Desktop Codex Broker
 
-Delegate coding tasks from Claude (Cowork / Claude Desktop) to OpenAI's Codex CLI (GPT-5.x models) — with Claude planning and quality-controlling, Codex implementing, and a hardened broker handling everything the Codex sandbox cannot.
+Delegate coding tasks from Claude (Cowork / Claude Desktop / Claude Code) to OpenAI's Codex CLI (GPT-5.x models) — with Claude planning and quality-controlling, Codex implementing, and a hardened broker handling everything the Codex sandbox cannot.
 
 Codex usage bills to your ChatGPT plan; orchestration runs on your Claude plan. The two AIs cross-check each other: uncorrelated errors are the point.
 
@@ -21,7 +21,7 @@ flowchart LR
 | `dist/` | Ready-to-install packages: `codex-broker.mcpb` (drag into Claude Desktop → Settings → Extensions) and `codex-delegation.skill` |
 | `docs/` | [Architecture](docs/ARCHITECTURE.md) · [Windows install guide](docs/INSTALL-WINDOWS.md) · [Field-testing lessons](docs/LESSONS.md) |
 
-## Quick start
+## Quick start — Claude Desktop / Cowork
 
 1. Prerequisites: Node 18.18+, `npm install -g @openai/codex`, `codex login` (ChatGPT subscription or API key), GitHub CLI (`gh auth login`) for repo operations.
 2. Install `dist/codex-broker.mcpb`: Claude Desktop → Settings → Extensions → drag the file in.
@@ -29,6 +29,12 @@ flowchart LR
 4. Start a new Cowork session — the tools appear as `mcp__remote-devices__Codex_Broker__*`.
 
 Full walkthrough with verification steps: [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md).
+
+## Quick start — Claude Code
+
+Clone the repo, open Claude Code inside it, and say: **"Set up the Codex broker per CLAUDE.md."** Claude Code checks prerequisites, installs server deps, installs the skill, runs the test suite, and tells you the one step it can't do for you (`codex login`). The repo's `.mcp.json` provides the project-scoped server (tools appear as `mcp__codex-broker__*`); [CLAUDE.md](CLAUDE.md) includes the user-scoped registration command for using the broker from any directory.
+
+Details and the manual path: [docs/INSTALL-CLAUDE-CODE.md](docs/INSTALL-CLAUDE-CODE.md).
 
 ## Tools
 
