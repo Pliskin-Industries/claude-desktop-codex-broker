@@ -44,9 +44,10 @@ failure rather than improvising around it.
    - `node server/test/run-tests.mjs` (from `server/`) → expect 24/24 pass. The
      suite uses a mock codex on PATH; no network or OpenAI account needed.
    - Restart the Claude Code session so MCP servers reload. Tools appear as
-     `mcp__codex-broker__<name>` (project scope) — ten tools: codex_task,
+     `mcp__codex-broker__<name>` (project scope) — fifteen tools: codex_task,
      codex_start, codex_status, codex_result, codex_cancel, codex_review,
-     codex_resume, git_push, git_pull, gh_repo_create.
+     codex_resume, git_push, git_pull, git_commit, git_clone, gh_repo_create,
+     gh_read, gh_pr_create, gh_issue_create.
    - Smoke test: `codex_task` with prompt "Reply with exactly: READY" and
      `cwd` set to any existing directory. Expect READY. This confirms the
      real Codex CLI resolves and authenticates.

@@ -2,7 +2,7 @@
 // Integration tests: spawn server.mjs and talk to it over real stdio JSON-RPC
 // (MCP newline-delimited framing). A mock `codex` is placed first on PATH so no
 // network/OpenAI access is needed. Prints PASS/FAIL per case; exit 1 if any fail.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -33,10 +33,16 @@ const codexLink = path.join(binDir, "codex");
 fs.copyFileSync(MOCK, codexLink);
 fs.chmodSync(codexLink, 0o755);
 
+// Mock gh for the v1.5.0 gh_* pass-through tests: echoes its argv.
+const mockGh = path.join(binDir, "gh");
+fs.writeFileSync(mockGh, '#!/bin/sh\necho "MOCKGH $@"\n');
+fs.chmodSync(mockGh, 0o755);
+
 const childEnv = {
   ...process.env,
   PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
   CODEX_BROKER_HOME: brokerHome,
+  GH_BIN: mockGh,
   // Ensure no ambient overrides leak in.
   CODEX_BIN: "",
   CODEX_MODEL: "",
@@ -245,7 +251,7 @@ async function main() {
 
   await client.initialize();
   const tools = await client.request("tools/list", {});
-  await test("tools/list exposes all 10 tools", async () => {
+  await test("tools/list exposes all 15 tools", async () => {
     const names = tools.tools.map((t) => t.name).sort();
     const expected = [
       "codex_cancel",
@@ -257,7 +263,12 @@ async function main() {
       "codex_task",
       "git_push",
       "git_pull",
+      "git_commit",
+      "git_clone",
       "gh_repo_create",
+      "gh_read",
+      "gh_pr_create",
+      "gh_issue_create",
     ].sort();
     assert(JSON.stringify(names) === JSON.stringify(expected), `got tools: ${names.join(",")}`);
   });
@@ -439,6 +450,102 @@ async function main() {
     assert(!b.includes("sandbox_workspace_write.network_access=true"), "flag wrongly added under read-only");
     const c = buildTaskArgs({ sandbox: "workspace-write", model: null, lastMessageFile: "x" });
     assert(!c.includes("sandbox_workspace_write.network_access=true"), "flag wrongly added by default");
+  });
+
+  // ---- v1.5.0: git_commit / git_clone / gh_read / gh_pr_create / gh_issue_create
+
+  await test("git_commit end-to-end: stages and commits in a real repo", async () => {
+    const repo = path.join(tmpRoot, "commit-repo");
+    fs.mkdirSync(repo, { recursive: true });
+    const g = (...a) => {
+      const r = spawnSync("git", a, { cwd: repo, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${a.join(" ")} failed: ${r.stderr}`);
+      return r.stdout;
+    };
+    g("init", "-q");
+    g("config", "user.email", "test@example.invalid");
+    g("config", "user.name", "Broker Test");
+    fs.writeFileSync(path.join(repo, "a.txt"), "hello\n");
+    const r = await client.call("git_commit", { cwd: repo, message: "test commit via broker" });
+    assert(!r.isError, `expected success, got: ${r.text}`);
+    const log = g("log", "--oneline");
+    assert(/test commit via broker/.test(log), `commit missing from log: ${log}`);
+  });
+
+  await test("git_commit with pathspecs stages only listed paths", async () => {
+    const repo = path.join(tmpRoot, "commit-repo"); // repo from prior test
+    fs.writeFileSync(path.join(repo, "wanted.txt"), "yes\n");
+    fs.writeFileSync(path.join(repo, "unwanted.txt"), "no\n");
+    const r = await client.call("git_commit", { cwd: repo, message: "partial", paths: ["wanted.txt"] });
+    assert(!r.isError, `expected success, got: ${r.text}`);
+    const st = spawnSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" }).stdout;
+    assert(/\?\? unwanted\.txt/.test(st), `unwanted.txt should remain untracked: ${st}`);
+    assert(!/wanted\.txt/.test(st.replace(/\?\? unwanted\.txt/, "")), `wanted.txt should be committed: ${st}`);
+  });
+
+  await test("git_commit rejects flag-like and escaping pathspecs", async () => {
+    const r1 = await client.call("git_commit", { cwd: workDir, message: "x", paths: ["--all"] });
+    assert(r1.isError && /Invalid pathspec/.test(r1.text), `expected rejection, got: ${r1.text}`);
+    const r2 = await client.call("git_commit", { cwd: workDir, message: "x", paths: ["../escape.txt"] });
+    assert(r2.isError && /Invalid pathspec/.test(r2.text), `expected rejection, got: ${r2.text}`);
+  });
+
+  await test("git_commit reports 'nothing to commit' as clean failure", async () => {
+    const repo = path.join(tmpRoot, "clean-repo");
+    fs.mkdirSync(repo, { recursive: true });
+    for (const a of [["init", "-q"], ["config", "user.email", "t@example.invalid"], ["config", "user.name", "T"]]) {
+      spawnSync("git", a, { cwd: repo });
+    }
+    fs.writeFileSync(path.join(repo, "x.txt"), "x\n");
+    spawnSync("git", ["add", "-A"], { cwd: repo });
+    spawnSync("git", ["commit", "-q", "-m", "seed"], { cwd: repo });
+    const r = await client.call("git_commit", { cwd: repo, message: "empty" });
+    assert(r.isError && /FAILED/.test(r.text), `expected clean failure, got: ${r.text}`);
+  });
+
+  await test("git_clone validates url and dest (https only, new absolute dest)", async () => {
+    const r1 = await client.call("git_clone", { url: "ssh://git@github.com/x/y.git", dest: path.join(tmpRoot, "c1") });
+    assert(r1.isError && /Invalid clone url/.test(r1.text), `ssh url should be rejected: ${r1.text}`);
+    const r2 = await client.call("git_clone", { url: "file:///etc", dest: path.join(tmpRoot, "c2") });
+    assert(r2.isError && /Invalid clone url/.test(r2.text), `file url should be rejected: ${r2.text}`);
+    const r3 = await client.call("git_clone", { url: `file://${path.join(tmpRoot, "commit-repo")}`, dest: path.join(tmpRoot, "c3") });
+    assert(r3.isError && /Invalid clone url/.test(r3.text), `local transport should be rejected: ${r3.text}`);
+    const r4 = await client.call("git_clone", { url: "https://github.com/x/y.git", dest: workDir });
+    assert(r4.isError && /already exists/.test(r4.text), `existing dest should be rejected: ${r4.text}`);
+    const r5 = await client.call("git_clone", { url: "https://github.com/x/y.git", dest: "relative/dest" });
+    assert(r5.isError && /absolute/.test(r5.text), `relative dest should be rejected: ${r5.text}`);
+  });
+
+  await test("gh_read enforces the read-only allowlist", async () => {
+    const r1 = await client.call("gh_read", { args: ["api", "repos/x/y"] });
+    assert(r1.isError && /not allowed/.test(r1.text), `api topic should be rejected: ${r1.text}`);
+    const r2 = await client.call("gh_read", { args: ["pr", "merge", "1"] });
+    assert(r2.isError && /not allowed/.test(r2.text), `merge verb should be rejected: ${r2.text}`);
+    const r3 = await client.call("gh_read", { args: ["pr", "view", "--web"] });
+    assert(r3.isError && /--web/.test(r3.text), `--web should be rejected: ${r3.text}`);
+    const r4 = await client.call("gh_read", { args: ["issue"] });
+    assert(r4.isError && /args must be an array/.test(r4.text), `short args should be rejected: ${r4.text}`);
+  });
+
+  await test("gh_read passes allowlisted argv through to gh (mock)", async () => {
+    const r = await client.call("gh_read", { args: ["pr", "list", "--repo", "owner/name", "--limit", "5"], cwd: workDir });
+    assert(!r.isError && /MOCKGH pr list --repo owner\/name --limit 5/.test(r.text), `unexpected: ${r.text}`);
+  });
+
+  await test("gh_pr_create validates and passes through (mock)", async () => {
+    const r1 = await client.call("gh_pr_create", { cwd: workDir, title: "" });
+    assert(r1.isError && /title/.test(r1.text), `empty title should be rejected: ${r1.text}`);
+    const r2 = await client.call("gh_pr_create", { cwd: workDir, title: "T", base: "--force" });
+    assert(r2.isError && /Invalid base/.test(r2.text), `flag base should be rejected: ${r2.text}`);
+    const r3 = await client.call("gh_pr_create", { cwd: workDir, title: "Fix things", body: "b", base: "main", draft: true });
+    assert(!r3.isError && /MOCKGH pr create --title Fix things --body b --base main --draft/.test(r3.text), `unexpected: ${r3.text}`);
+  });
+
+  await test("gh_issue_create validates and passes through (mock)", async () => {
+    const r1 = await client.call("gh_issue_create", { cwd: workDir, title: "T", repo: "bad name" });
+    assert(r1.isError && /Invalid repo/.test(r1.text), `bad repo should be rejected: ${r1.text}`);
+    const r2 = await client.call("gh_issue_create", { cwd: workDir, title: "Bug", body: "details", repo: "owner/name" });
+    assert(!r2.isError && /MOCKGH issue create --title Bug --body details --repo owner\/name/.test(r2.text), `unexpected: ${r2.text}`);
   });
 }
 

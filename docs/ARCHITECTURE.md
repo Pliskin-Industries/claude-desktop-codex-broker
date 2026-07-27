@@ -8,7 +8,7 @@ Three actors with strictly separated capabilities. The separation is not stylist
 |---|---|---|---|
 | Claude (orchestrator) | Anthropic cloud container | Plan, decompose, craft Codex prompts, review diffs, run tests, merge, clone from GitHub | Execute anything on the user's machine directly |
 | Codex (GPT-5.x) | User's machine, OS-level sandbox, separate OS user | Read broadly, write inside the target project, run commands, commit locally | Network, credentials, pushing/pulling, launching other tools (e.g. `gh`) |
-| Broker | User's machine, unsandboxed Node process hosted by Claude Desktop as an MCPB extension | Spawn Codex, manage background jobs, push/pull/create repos with the user's stored credentials | Force-push, escalate the Codex sandbox, accept flag injection (validated argv, stdin-fed prompts) |
+| Broker | User's machine, unsandboxed Node process hosted by Claude Desktop as an MCPB extension | Spawn Codex, manage background jobs; with the user's stored credentials: push/pull/commit/clone (https-only), create repos, open PRs/issues, and run allowlisted read-only gh queries (v1.5.0) | Force-push, merge PRs, escalate the Codex sandbox, accept flag injection (validated argv, stdin-fed prompts, allowlisted gh verbs) |
 
 ## Why the broker does git, not Codex
 

@@ -41,6 +41,24 @@ git -C <cwd> status --short
 git -C <cwd> push origin <integration-branch>
 ```
 
+## Step 1.5 — Orchestrator-authored changes skip Codex entirely (v1.5.0+)
+
+If YOU authored the changes (docs, config, code you wrote and tested in the
+container) and can place the files on the user's primary clone working tree
+(device bridge in Cowork, direct writes in Claude Code), do not involve Codex
+in the release at all:
+
+1. Verify the primary clone is clean and current: `git_pull(cwd)`.
+2. Write the changed files onto the working tree.
+3. `git_commit(cwd, message)` — or `git_commit(cwd, message, paths=[...])` to
+   stage selectively.
+4. `git_push(cwd, branch)`.
+
+Reserve the temp-clone protocol below for Codex-authored work. Similarly, to
+get a repo onto the user's disk for Codex to review or extend, use
+`git_clone(url, dest)` (broker-side, credentialed, https-only) rather than
+asking the user to clone manually.
+
 ## Step 2 — Instruct Codex in its prompt
 
 Codex runs on the user's local clone. Put these git instructions verbatim into

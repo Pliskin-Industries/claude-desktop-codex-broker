@@ -2,6 +2,8 @@
 // Codex broker: a local stdio MCP server that lets Claude delegate coding tasks
 // to OpenAI's Codex CLI. Long runs are fire-and-poll background jobs so they
 // never hit MCP/tool timeouts. See README.md.
+import path from "node:path";
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -24,7 +26,19 @@ import {
 } from "./lib/util.mjs";
 import { buildResumeArgs, buildReviewArgs, buildTaskArgs } from "./lib/codex.mjs";
 import { runPlainCommand } from "./lib/jobs.mjs";
-import { resolveGitBinary, resolveGhBinary, validateRepoName, validateRefName } from "./lib/util.mjs";
+import {
+  resolveGitBinary,
+  resolveGhBinary,
+  validateRepoName,
+  validateRefName,
+  validateHttpsGitUrl,
+  validateNewDirPath,
+  validateCommitMessage,
+  validatePathspec,
+  validateGhReadArgs,
+  validateTextField,
+  validateOwnerRepo,
+} from "./lib/util.mjs";
 import { cancelJob, jobExists, readJob, runSyncJob, startJob } from "./lib/jobs.mjs";
 
 const DEFAULT_TASK_TIMEOUT = 240;
@@ -91,7 +105,7 @@ function renderSyncOutcome(kind, job, { timedOut, timeoutSeconds }) {
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "codex-broker", version: "1.4.1" },
+  { name: "codex-broker", version: "1.5.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -240,6 +254,83 @@ const TOOLS = [
       required: ["cwd", "name"],
     },
   },
+  {
+    name: "git_commit",
+    description:
+      "Broker-side git stage + commit (runs OUTSIDE the Codex sandbox — use for orchestrator-authored changes already written to the working tree; Codex cannot write .git). Stages then commits in one call. Fails cleanly if there is nothing to commit.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: { type: "string", description: "Absolute path to the local git repository." },
+        message: { type: "string", description: "Commit message (max 4000 chars)." },
+        paths: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional relative pathspecs to stage (git add -- <paths>). Omit to stage everything (git add -A).",
+        },
+      },
+      required: ["cwd", "message"],
+    },
+  },
+  {
+    name: "git_clone",
+    description:
+      "Broker-side git clone (credentialed, outside the Codex sandbox). https URLs only; dest must be a new absolute path. Use to bring a repo onto disk for Codex to review or work on.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "https clone URL (e.g. https://github.com/owner/repo.git)." },
+        dest: { type: "string", description: "Absolute path for the new clone directory (must not exist)." },
+        branch: { type: "string", description: "Optional branch to check out." },
+      },
+      required: ["url", "dest"],
+    },
+  },
+  {
+    name: "gh_read",
+    description:
+      "Broker-side read-only gh CLI dispatcher (credentialed). args is the gh argv, restricted to an allowlist: pr {list,view,diff,checks,status}, issue {list,view,status}, run {list,view}, release {list,view}, repo {view}. Extra flags like --repo owner/name, --limit, --json pass through; --web is refused. Example: args=[\"pr\",\"list\",\"--repo\",\"owner/name\",\"--limit\",\"10\"].",
+    inputSchema: {
+      type: "object",
+      properties: {
+        args: { type: "array", items: { type: "string" }, description: "gh argv, e.g. [\"pr\",\"view\",\"123\",\"--repo\",\"owner/name\"]." },
+        cwd: { type: "string", description: "Optional repo directory for context. Default: broker home." },
+      },
+      required: ["args"],
+    },
+  },
+  {
+    name: "gh_pr_create",
+    description:
+      "Broker-side gh pr create (credentialed). Creates a pull request from the repo at cwd. Head defaults to the current branch. Never merges.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: { type: "string", description: "Absolute path to the local git repository." },
+        title: { type: "string", description: "PR title (max 300 chars)." },
+        body: { type: "string", description: "PR body (max 20000 chars). Default empty." },
+        base: { type: "string", description: "Base branch. Default: repo default branch." },
+        head: { type: "string", description: "Head branch. Default: current branch." },
+        draft: { type: "boolean", description: "Create as draft. Default false." },
+      },
+      required: ["cwd", "title"],
+    },
+  },
+  {
+    name: "gh_issue_create",
+    description:
+      "Broker-side gh issue create (credentialed). Creates an issue on the repo at cwd, or on --repo owner/name if given.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: { type: "string", description: "Absolute path to a directory (repo for context unless repo param is set)." },
+        title: { type: "string", description: "Issue title (max 300 chars)." },
+        body: { type: "string", description: "Issue body (max 20000 chars). Default empty." },
+        repo: { type: "string", description: "Optional owner/name target instead of cwd's repo." },
+      },
+      required: ["cwd", "title"],
+    },
+  },
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
@@ -268,6 +359,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await handleGitPull(args);
       case "gh_repo_create":
         return await handleGhRepoCreate(args);
+      case "git_commit":
+        return await handleGitCommit(args);
+      case "git_clone":
+        return await handleGitClone(args);
+      case "gh_read":
+        return await handleGhRead(args);
+      case "gh_pr_create":
+        return await handleGhPrCreate(args);
+      case "gh_issue_create":
+        return await handleGhIssueCreate(args);
       default:
         return textResult(`Unknown tool: ${name}`, true);
     }
@@ -506,4 +607,82 @@ async function handleGhRepoCreate(args) {
   const argv = ["repo", "create", rawName, visibility, "--source", ".", "--push"];
   const r = await runPlainCommand({ jobClass: "gh", bin: resolveGhBinary(), argv, cwd, timeoutMs: 120000 });
   return renderPlain(`gh repo create ${rawName}`, r);
+}
+
+// ---- v1.5.0 handlers -------------------------------------------------------
+
+async function handleGitCommit(args) {
+  const cwd = validateCwd(args.cwd);
+  const message = validateCommitMessage(args.message);
+  const git = resolveGitBinary();
+
+  let addArgv;
+  if (Array.isArray(args.paths) && args.paths.length > 0) {
+    const specs = args.paths.map(validatePathspec);
+    addArgv = ["add", "--", ...specs];
+  } else {
+    addArgv = ["add", "-A"];
+  }
+  const add = await runPlainCommand({ jobClass: "git", bin: git, argv: addArgv, cwd, timeoutMs: 120000 });
+  if (!add.ok) return renderPlain("git add", add);
+
+  const commit = await runPlainCommand({
+    jobClass: "git",
+    bin: git,
+    argv: ["commit", "-m", message],
+    cwd,
+    timeoutMs: 120000,
+  });
+  if (!commit.ok) return renderPlain("git commit", commit);
+
+  const show = await runPlainCommand({
+    jobClass: "git",
+    bin: git,
+    argv: ["show", "--stat", "--format=%H %s", "HEAD"],
+    cwd,
+    timeoutMs: 60000,
+  });
+  return renderPlain("git commit", { ok: true, code: 0, output: `${commit.output}\n${show.output}` });
+}
+
+async function handleGitClone(args) {
+  const url = validateHttpsGitUrl(args.url);
+  const dest = validateNewDirPath(args.dest, "dest");
+  const argv = ["clone", url, dest];
+  if (args.branch) {
+    argv.push("-b", validateRefName(args.branch, "branch"));
+  }
+  // cwd = dest's parent (validated to exist by validateNewDirPath).
+  const parent = path.dirname(dest);
+  const r = await runPlainCommand({ jobClass: "git", bin: resolveGitBinary(), argv, cwd: parent, timeoutMs: 300000 });
+  return renderPlain(`git clone -> ${dest}`, r);
+}
+
+async function handleGhRead(args) {
+  const argv = validateGhReadArgs(args.args);
+  const cwd = args.cwd ? validateCwd(args.cwd) : process.env.HOME || process.env.USERPROFILE || ".";
+  const r = await runPlainCommand({ jobClass: "gh", bin: resolveGhBinary(), argv, cwd, timeoutMs: 120000 });
+  return renderPlain(`gh ${argv[0]} ${argv[1]}`, r);
+}
+
+async function handleGhPrCreate(args) {
+  const cwd = validateCwd(args.cwd);
+  const title = validateTextField(args.title, "title", 300);
+  const body = validateTextField(args.body, "body", 20000, { required: false });
+  const argv = ["pr", "create", "--title", title, "--body", body];
+  if (args.base) argv.push("--base", validateRefName(args.base, "base"));
+  if (args.head) argv.push("--head", validateRefName(args.head, "head"));
+  if (args.draft === true) argv.push("--draft");
+  const r = await runPlainCommand({ jobClass: "gh", bin: resolveGhBinary(), argv, cwd, timeoutMs: 120000 });
+  return renderPlain("gh pr create", r);
+}
+
+async function handleGhIssueCreate(args) {
+  const cwd = validateCwd(args.cwd);
+  const title = validateTextField(args.title, "title", 300);
+  const body = validateTextField(args.body, "body", 20000, { required: false });
+  const argv = ["issue", "create", "--title", title, "--body", body];
+  if (args.repo) argv.push("--repo", validateOwnerRepo(args.repo));
+  const r = await runPlainCommand({ jobClass: "gh", bin: resolveGhBinary(), argv, cwd, timeoutMs: 120000 });
+  return renderPlain("gh issue create", r);
 }

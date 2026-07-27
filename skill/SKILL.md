@@ -30,7 +30,7 @@ code review, or a design critique — even if the user did not say "codex".
 Tool names depend on the host. In a Cowork session the broker is proxied
 through the desktop bridge as `mcp__remote-devices__Codex_Broker__<name>`; in
 Claude Code (registered via the repo's `.mcp.json` or `claude mcp add`) they
-appear as `mcp__codex-broker__<name>`. Same ten tools either way:
+appear as `mcp__codex-broker__<name>`. Same fifteen tools either way:
 
 - `codex_task(prompt, cwd, model?, sandbox?, timeout_seconds?)` — synchronous.
   Short tasks only (under ~4 min). Blocks until done.
@@ -42,11 +42,19 @@ appear as `mcp__codex-broker__<name>`. Same ten tools either way:
 - `codex_resume(thread_id, prompt, cwd, timeout_seconds?)` — continue an
   existing Codex thread with a delta instruction.
 - `git_push(cwd, branch, remote?)`, `git_pull(cwd, remote?, branch?)`,
-  `gh_repo_create(cwd, name, visibility?)` — broker-side git/GitHub operations.
-  These run OUTSIDE the Codex sandbox (Codex cannot push: its sandbox runs as a
-  separate OS user with no credential access). Codex commits; YOU push via
-  these tools after reviewing. git_push never force-pushes; git_pull is
-  ff-only.
+  `git_commit(cwd, message, paths?)`, `git_clone(url, dest, branch?)`,
+  `gh_repo_create(cwd, name, visibility?)`, `gh_pr_create(cwd, title, body?,
+  base?, head?, draft?)`, `gh_issue_create(cwd, title, body?, repo?)`,
+  `gh_read(args, cwd?)` — broker-side git/GitHub operations (v1.5.0+). These
+  run OUTSIDE the Codex sandbox with the user's credentials and validated
+  arguments. git_push never force-pushes; git_pull is ff-only; git_clone is
+  https-only; gh_read is a read-only allowlisted dispatcher (pr/issue/run/
+  release/repo × list/view/diff/checks/status — no --web, no writes).
+- Two commit paths: **Codex-authored work** — Codex commits in its temp clone
+  (it cannot write any existing repo's .git), you push from the clone path.
+  **Orchestrator-authored changes** (files you wrote to the user's working
+  tree yourself, e.g. via the device bridge) — `git_commit` then `git_push`
+  directly on the primary clone; no Codex involvement, no temp clone.
 
 Sandbox is `workspace-write` by default; reviews are read-only. Never instruct
 Codex or the broker to escalate past `workspace-write`. If a task seems to need

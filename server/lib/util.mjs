@@ -283,3 +283,112 @@ export function validateRefName(value, label, fallback) {
   }
   return v;
 }
+
+// ---- v1.5.0 validators (git_commit / git_clone / gh_* verbs) ---------------
+
+// Clone URLs: https only, no flags, conservative charset. Local paths, ssh,
+// and file:// are deliberately rejected — the broker holds credentials, so its
+// reachable surface stays narrow and auditable.
+export function validateHttpsGitUrl(value) {
+  const v = requireString(value, "url");
+  if (!/^https:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._~/-]+$/.test(v) || v.includes("..")) {
+    throw new ValidationError(`Invalid clone url "${v}" (https://host/path only).`);
+  }
+  return v;
+}
+
+// Destination for git_clone: absolute, must NOT exist, parent must exist.
+export function validateNewDirPath(value, label = "dest") {
+  const v = requireString(value, label);
+  if (!path.isAbsolute(v)) throw new ValidationError(`${label} must be an absolute path, got "${v}".`);
+  if (fs.existsSync(v)) throw new ValidationError(`${label} already exists: "${v}".`);
+  const parent = path.dirname(v);
+  let st;
+  try {
+    st = fs.statSync(parent);
+  } catch {
+    throw new ValidationError(`${label} parent does not exist: "${parent}".`);
+  }
+  if (!st.isDirectory()) throw new ValidationError(`${label} parent is not a directory: "${parent}".`);
+  return v;
+}
+
+export function validateCommitMessage(value) {
+  const v = requireString(value, "message");
+  if (v.length > 4000 || v.includes("\0")) {
+    throw new ValidationError(`Invalid commit message (max 4000 chars, no NUL).`);
+  }
+  return v;
+}
+
+// Pathspecs for git_commit's optional paths: relative, no flags, no parent
+// escapes. Always passed after a "--" separator as a second defense.
+export function validatePathspec(value) {
+  const v = requireString(value, "paths[]");
+  if (path.isAbsolute(v) || v.startsWith("-") || v.includes("\0") || v.split(/[\\/]/).includes("..")) {
+    throw new ValidationError(`Invalid pathspec "${v}" (relative, no flags, no ..).`);
+  }
+  return v;
+}
+
+// gh_read allowlist: read-only topic/verb pairs. Everything else is rejected
+// before any process is spawned. --web is refused (opens a browser).
+const GH_READ_VERBS = {
+  pr: ["list", "view", "diff", "checks", "status"],
+  issue: ["list", "view", "status"],
+  run: ["list", "view"],
+  release: ["list", "view"],
+  repo: ["view"],
+};
+export function validateGhReadArgs(rawArgs) {
+  if (!Array.isArray(rawArgs) || rawArgs.length < 2) {
+    throw new ValidationError(`gh_read args must be an array like ["pr","list",...].`);
+  }
+  const [topic, verb, ...rest] = rawArgs;
+  const verbs = GH_READ_VERBS[topic];
+  if (!verbs) {
+    throw new ValidationError(
+      `gh_read topic "${topic}" not allowed. Allowed: ${Object.keys(GH_READ_VERBS).join(", ")}.`
+    );
+  }
+  if (!verbs.includes(verb)) {
+    throw new ValidationError(
+      `gh_read verb "${verb}" not allowed for "${topic}". Allowed: ${verbs.join(", ")}.`
+    );
+  }
+  if (rest.length > 12) throw new ValidationError(`gh_read: too many arguments (max 12 after topic/verb).`);
+  for (const a of rest) {
+    if (typeof a !== "string" || a.length === 0 || a.length > 300 || a.includes("\0")) {
+      throw new ValidationError(`gh_read: invalid argument ${JSON.stringify(a)}.`);
+    }
+    if (a === "--web" || a === "-w") {
+      throw new ValidationError(`gh_read: --web is not allowed (broker is headless).`);
+    }
+  }
+  return [topic, verb, ...rest];
+}
+
+// Title/body text for gh_pr_create / gh_issue_create: bounded, no NUL.
+export function validateTextField(value, label, max, { required = true, fallback = "" } = {}) {
+  if (value == null || value === "") {
+    if (required) throw new ValidationError(`Missing or empty required parameter "${label}".`);
+    return fallback;
+  }
+  if (typeof value !== "string" || value.length > max || value.includes("\0")) {
+    throw new ValidationError(`Invalid ${label} (string, max ${max} chars, no NUL).`);
+  }
+  return value;
+}
+
+// owner/name (or bare name) for --repo flags.
+export function validateOwnerRepo(value, label = "repo") {
+  const v = requireString(value, label);
+  const parts = v.split("/");
+  if (parts.length > 2) throw new ValidationError(`Invalid ${label}: ${v}`);
+  for (const p of parts) {
+    if (!/^[A-Za-z0-9._-]{1,100}$/.test(p)) {
+      throw new ValidationError(`Invalid ${label} "${v}" (letters, digits, ., _, - only).`);
+    }
+  }
+  return v;
+}

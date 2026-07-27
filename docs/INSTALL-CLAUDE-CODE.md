@@ -23,7 +23,7 @@ API key).
 
 The repo ships a project-scoped `.mcp.json`, so when you open Claude Code
 inside this repo it will ask to enable the `codex-broker` server — approve it
-and the ten `mcp__codex-broker__*` tools appear. To use the broker from *any*
+and the fifteen `mcp__codex-broker__*` tools appear. To use the broker from *any*
 directory, ask Claude Code to register it user-scoped:
 
 ```bash
