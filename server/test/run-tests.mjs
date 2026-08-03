@@ -16,6 +16,7 @@ import {
   windowsModuleDirs,
 } from "../lib/util.mjs";
 import { buildTaskArgs } from "../lib/codex.mjs";
+import { classifyProbeFailure, meetsMinimum, parseNodeVersion } from "../../scripts/preflight.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(HERE, "..", "server.mjs");
@@ -597,6 +598,52 @@ async function main() {
     for (const u of ok) {
       assert(validateHttpsGitUrl(u) === u, `should have been accepted: ${u}`);
     }
+  });
+
+  // --- preflight classifier: the message must match the actual failure ------
+  // Misdiagnosing an egress policy denial as a broker bug is the exact failure
+  // mode this script exists to prevent, so the branches are pinned by tests.
+
+  await test("preflight classifies a proxy CONNECT denial as policy, not misconfiguration", async () => {
+    const r = classifyProbeFailure({
+      httpCode: "000",
+      stderr: "curl: (56) CONNECT tunnel failed, response 403",
+    });
+    assert(r.category === "policy" && !r.ok, `expected policy, got ${r.category}`);
+    assert(/allowlist api\.openai\.com/.test(r.advice), "advice must name the host to allowlist");
+    assert(/not a misconfiguration/.test(r.advice), "advice must not read as a broker bug");
+  });
+
+  await test("preflight treats 200 and 401 as reachable, 403/407 as blocked", async () => {
+    assert(classifyProbeFailure({ httpCode: "200", stderr: "" }).ok, "200 should be reachable");
+    // 401 means we reached the API and it rejected our credential — egress works.
+    const unauth = classifyProbeFailure({ httpCode: "401", stderr: "" });
+    assert(unauth.ok && unauth.category === "reachable", "401 should still count as reachable");
+    assert(!classifyProbeFailure({ httpCode: "403", stderr: "" }).ok, "403 should block");
+    assert(!classifyProbeFailure({ httpCode: "407", stderr: "" }).ok, "407 should block");
+  });
+
+  await test("preflight distinguishes TLS, proxy-method and unreachable failures", async () => {
+    const tls = classifyProbeFailure({ httpCode: "000", stderr: "SSL certificate problem: self-signed certificate in chain" });
+    assert(tls.category === "tls" && /NODE_EXTRA_CA_CERTS/.test(tls.advice), `expected tls, got ${tls.category}`);
+    assert(!/disable/i.test(tls.advice) || /Never disable/.test(tls.advice), "must not advise disabling verification");
+
+    const m405 = classifyProbeFailure({ httpCode: "405", stderr: "405 Method Not Allowed" });
+    assert(m405.category === "proxy-method", `expected proxy-method, got ${m405.category}`);
+
+    const dead = classifyProbeFailure({ httpCode: "000", stderr: "curl: (28) Operation timed out" });
+    assert(dead.category === "unreachable", `expected unreachable, got ${dead.category}`);
+
+    const huh = classifyProbeFailure({ httpCode: "500", stderr: "something else entirely" });
+    assert(huh.category === "unknown" && !huh.ok, `expected unknown, got ${huh.category}`);
+  });
+
+  await test("preflight node version comparison handles majors and minors", async () => {
+    assert(meetsMinimum(parseNodeVersion("v22.22.2"), [18, 18]), "22.22 >= 18.18");
+    assert(meetsMinimum(parseNodeVersion("v18.18.0"), [18, 18]), "18.18 >= 18.18 (equal)");
+    assert(!meetsMinimum(parseNodeVersion("v18.17.9"), [18, 18]), "18.17 < 18.18");
+    assert(!meetsMinimum(parseNodeVersion("v16.20.0"), [18, 18]), "16.20 < 18.18");
+    assert(!meetsMinimum(parseNodeVersion("garbage"), [18, 18]), "unparseable must not pass");
   });
 
   await test("validateHttpsGitUrl still rejects non-loopback http, ssh, file and traversal", async () => {
