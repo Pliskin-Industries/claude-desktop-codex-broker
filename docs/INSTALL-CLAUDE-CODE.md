@@ -17,7 +17,7 @@ Then tell Claude Code:
 
 Claude Code reads `CLAUDE.md`, checks prerequisites (Node ≥ 18.18, Codex CLI,
 git), runs `npm ci --prefix server`, installs the `codex-delegation` skill to
-`~/.claude/skills/`, runs the 33-test suite, and walks you through the one step
+`~/.claude/skills/`, runs the test suite, and walks you through the one step
 it cannot do for you: `codex login` (interactive, bills to your ChatGPT plan or
 API key).
 
@@ -40,7 +40,7 @@ A literal absolute path also works when registering from outside the clone.
 3. Register the server (project scope comes free via `.mcp.json`; user scope
    via the `claude mcp add` command above).
 4. Copy `skill/` to `~/.claude/skills/codex-delegation/`.
-5. Verify: `cd server && node test/run-tests.mjs` → 33/33. Restart Claude Code,
+5. Verify: `cd server && node test/run-tests.mjs` → `0 failed`. Restart Claude Code,
    confirm the tools are listed, then run a `codex_task` smoke test
    ("Reply with exactly: READY").
 

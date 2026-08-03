@@ -16,7 +16,7 @@ flowchart LR
 
 | Path | Contents |
 |---|---|
-| `server/` | Broker MCP server source (Node, zero-dependency runtime + @modelcontextprotocol/sdk), 33-test suite with a mock Codex harness |
+| `server/` | Broker MCP server source (Node, zero-dependency runtime + @modelcontextprotocol/sdk), integration suite with a mock Codex harness |
 | `skill/` | `codex-delegation` Claude skill — role architecture, git protocol, GPT prompting conventions |
 | `scripts/` | Deterministic packagers for both published artifacts; each takes `--verify` to check a built archive against its source |
 | `docs/` | [Architecture](docs/ARCHITECTURE.md) · [Windows install guide](docs/INSTALL-WINDOWS.md) · [Field-testing lessons](docs/LESSONS.md) |
