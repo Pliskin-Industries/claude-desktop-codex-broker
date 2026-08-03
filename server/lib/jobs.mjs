@@ -31,7 +31,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { jobsDir, spawnFailureMessage } from "./util.mjs";
+import { buildGitConfigEnv, jobsDir, spawnFailureMessage } from "./util.mjs";
 import { extractResult } from "./codex.mjs";
 
 const IS_WINDOWS = process.platform === "win32";
@@ -468,16 +468,10 @@ export function runPlainCommand({ jobClass, bin, argv, cwd, timeoutMs }) {
       child = spawn(bin, argv, {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
-        // Codex's sandbox runs as a separate OS user, so repos it creates are
-        // "dubiously owned" from the broker user's perspective. Scope a git
-        // safe.directory exception to exactly this cwd via env (works for git
-        // directly and for git invoked by gh).
-        env: {
-          ...process.env,
-          GIT_CONFIG_COUNT: "1",
-          GIT_CONFIG_KEY_0: "safe.directory",
-          GIT_CONFIG_VALUE_0: cwd,
-        },
+        // Scope a git safe.directory exception to exactly this cwd via env
+        // (works for git directly and for git invoked by gh), preserving any
+        // GIT_CONFIG_* the host already set. See buildGitConfigEnv.
+        env: buildGitConfigEnv(process.env, cwd),
         windowsHide: true,
       });
     } catch (err) {

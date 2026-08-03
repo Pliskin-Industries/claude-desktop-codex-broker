@@ -9,8 +9,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  buildGitConfigEnv,
   computeCodexBinary,
   locateWindowsCodexExe,
+  validateHttpsGitUrl,
   windowsModuleDirs,
 } from "../lib/util.mjs";
 import { buildTaskArgs } from "../lib/codex.mjs";
@@ -546,6 +548,77 @@ async function main() {
     assert(r1.isError && /Invalid repo/.test(r1.text), `bad repo should be rejected: ${r1.text}`);
     const r2 = await client.call("gh_issue_create", { cwd: workDir, title: "Bug", body: "details", repo: "owner/name" });
     assert(!r2.isError && /MOCKGH issue create --title Bug --body details --repo owner\/name/.test(r2.text), `unexpected: ${r2.text}`);
+  });
+
+  // --- buildGitConfigEnv: must never discard host-injected git config -------
+  // Cloud hosts pre-populate GIT_CONFIG_*; overwriting index 0 silently broke
+  // credential handling and url.*.insteadOf rewriting.
+
+  await test("buildGitConfigEnv appends after inherited GIT_CONFIG entries", async () => {
+    const env = {
+      GIT_CONFIG_COUNT: "3",
+      GIT_CONFIG_KEY_0: "credential.interactive",
+      GIT_CONFIG_VALUE_0: "false",
+      GIT_CONFIG_KEY_1: "url.https://github.com/.insteadOf",
+      GIT_CONFIG_VALUE_1: "git@github.com:",
+      GIT_CONFIG_KEY_2: "url.https://github.com/.insteadOf",
+      GIT_CONFIG_VALUE_2: "ssh://git@github.com/",
+    };
+    const out = buildGitConfigEnv(env, "/work/repo");
+    assert(out.GIT_CONFIG_COUNT === "4", `expected count 4, got ${out.GIT_CONFIG_COUNT}`);
+    assert(out.GIT_CONFIG_KEY_3 === "safe.directory", `safe.directory should land at index 3, got ${out.GIT_CONFIG_KEY_3}`);
+    assert(out.GIT_CONFIG_VALUE_3 === "/work/repo", `bad value: ${out.GIT_CONFIG_VALUE_3}`);
+    // every inherited entry survives untouched
+    assert(out.GIT_CONFIG_KEY_0 === "credential.interactive", "inherited key 0 was clobbered");
+    assert(out.GIT_CONFIG_VALUE_1 === "git@github.com:", "inherited value 1 was clobbered");
+    assert(out.GIT_CONFIG_VALUE_2 === "ssh://git@github.com/", "inherited value 2 was clobbered");
+  });
+
+  await test("buildGitConfigEnv starts at index 0 when nothing is inherited", async () => {
+    for (const env of [{}, { GIT_CONFIG_COUNT: "0" }, { GIT_CONFIG_COUNT: "not-a-number" }, { GIT_CONFIG_COUNT: "-2" }]) {
+      const out = buildGitConfigEnv(env, "/w");
+      assert(out.GIT_CONFIG_COUNT === "1", `expected count 1 for ${JSON.stringify(env)}, got ${out.GIT_CONFIG_COUNT}`);
+      assert(out.GIT_CONFIG_KEY_0 === "safe.directory", `expected index 0 for ${JSON.stringify(env)}`);
+      assert(out.GIT_CONFIG_VALUE_0 === "/w", `bad value for ${JSON.stringify(env)}`);
+    }
+  });
+
+  // --- validateHttpsGitUrl: loopback exception must not widen the surface ---
+
+  await test("validateHttpsGitUrl accepts https and loopback-http clone urls", async () => {
+    const ok = [
+      "https://github.com/owner/repo",
+      "https://github.com/owner/repo.git",
+      "https://ghe.internal:8443/owner/repo",
+      "http://127.0.0.1:41729/git/owner/repo",
+      "http://local_proxy@127.0.0.1:41729/git/owner/repo",
+      "http://localhost/git/owner/repo",
+    ];
+    for (const u of ok) {
+      assert(validateHttpsGitUrl(u) === u, `should have been accepted: ${u}`);
+    }
+  });
+
+  await test("validateHttpsGitUrl still rejects non-loopback http, ssh, file and traversal", async () => {
+    const bad = [
+      "http://evil.example.com/owner/repo",      // plain http off-loopback
+      "http://127.0.0.1.evil.com/owner/repo",    // loopback-lookalike host
+      "http://user:pw@127.0.0.1/git/o/r",        // password smuggled into userinfo
+      "ssh://git@github.com/owner/repo",
+      "git@github.com:owner/repo",
+      "file:///etc/passwd",
+      "https://github.com/owner/../../etc",      // traversal
+      "https://github.com/owner/repo --upload-pack=evil", // flag injection
+    ];
+    for (const u of bad) {
+      let threw = false;
+      try {
+        validateHttpsGitUrl(u);
+      } catch {
+        threw = true;
+      }
+      assert(threw, `should have been rejected: ${u}`);
+    }
   });
 }
 

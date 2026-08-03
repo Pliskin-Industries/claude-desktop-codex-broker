@@ -286,15 +286,54 @@ export function validateRefName(value, label, fallback) {
 
 // ---- v1.5.0 validators (git_commit / git_clone / gh_* verbs) ---------------
 
-// Clone URLs: https only, no flags, conservative charset. Local paths, ssh,
-// and file:// are deliberately rejected — the broker holds credentials, so its
+// Clone URLs: https, no flags, conservative charset. Local paths, ssh, and
+// file:// are deliberately rejected — the broker holds credentials, so its
 // reachable surface stays narrow and auditable.
+const HTTPS_CLONE_URL = /^https:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?\/[A-Za-z0-9._~/-]+$/;
+
+// One narrow exception to https-only: a loopback http git proxy. Cloud hosts
+// expose the session's own remote this way — Claude Code on the web publishes it
+// as http://<user>@127.0.0.1:<port>/git/<owner>/<repo> — so without this,
+// git_clone cannot clone the very repo the session is working in.
+//
+// Pinned to loopback literals so relaxing the scheme can never reach the
+// network. Userinfo deliberately excludes ':' so a password can never be
+// smuggled into a URL that ends up in logs or error text.
+const LOOPBACK_HTTP_CLONE_URL =
+  /^http:\/\/(?:[A-Za-z0-9._~-]+@)?(?:127\.0\.0\.1|localhost)(?::\d{1,5})?\/[A-Za-z0-9._~/-]+$/;
+
 export function validateHttpsGitUrl(value) {
   const v = requireString(value, "url");
-  if (!/^https:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._~/-]+$/.test(v) || v.includes("..")) {
-    throw new ValidationError(`Invalid clone url "${v}" (https://host/path only).`);
+  if (v.includes("..") || (!HTTPS_CLONE_URL.test(v) && !LOOPBACK_HTTP_CLONE_URL.test(v))) {
+    throw new ValidationError(
+      `Invalid clone url "${v}" (https://host[:port]/path, or ` +
+        `http://[user@]127.0.0.1[:port]/path for a session-local git proxy).`
+    );
   }
   return v;
+}
+
+// Compose the environment for a broker-side git/gh invocation, scoping a
+// safe.directory exception to exactly `cwd`. Codex's sandbox runs as a separate
+// OS user, so repos it creates look "dubiously owned" to the broker user.
+//
+// git reads config from GIT_CONFIG_COUNT plus GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n.
+// Hosts frequently pre-populate those: Claude Code on the web injects
+// credential.interactive=false and two url.*.insteadOf rewrite rules that way.
+// Writing safe.directory to index 0 with COUNT=1 silently discards every
+// inherited rule — breaking credential handling and SSH-to-HTTPS rewriting — so
+// append at the next free index instead.
+export function buildGitConfigEnv(env, cwd) {
+  const parsed = Number.parseInt(env.GIT_CONFIG_COUNT ?? "", 10);
+  // A malformed or absent count means there is nothing trustworthy to preserve;
+  // git itself would reject it. Start from zero rather than guessing.
+  const inherited = Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+  return {
+    ...env,
+    [`GIT_CONFIG_KEY_${inherited}`]: "safe.directory",
+    [`GIT_CONFIG_VALUE_${inherited}`]: cwd,
+    GIT_CONFIG_COUNT: String(inherited + 1),
+  };
 }
 
 // Destination for git_clone: absolute, must NOT exist, parent must exist.
