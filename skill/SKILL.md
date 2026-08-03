@@ -27,10 +27,21 @@ code review, or a design critique — even if the user did not say "codex".
 
 ## Tool contract
 
-Tool names depend on the host. In a Cowork session the broker is proxied
-through the desktop bridge as `mcp__remote-devices__Codex_Broker__<name>`; in
-Claude Code (registered via the repo's `.mcp.json` or `claude mcp add`) they
-appear as `mcp__codex-broker__<name>`. Same fifteen tools either way:
+The tool prefix depends on how the broker was registered; the suffix after the
+last `__` is always the bare tool name. Match on the suffix, not the prefix.
+Known prefixes:
+
+- `mcp__Codex_Broker__<name>` — installed as a Claude Desktop extension (the
+  `.mcpb` bundle). Derived from the manifest's `display_name`, so it is
+  title-cased with an underscore. This is the usual case in the desktop app,
+  including Claude Code sessions running inside it.
+- `mcp__remote-devices__Codex_Broker__<name>` — a Cowork session reaching the
+  broker through the desktop bridge.
+- `mcp__codex-broker__<name>` — Claude Code CLI, registered from the repo's
+  `.mcp.json` or via `claude mcp add`. Takes the server key verbatim, so it
+  matches whatever name you used there.
+
+Same fifteen tools whichever prefix is in play:
 
 - `codex_task(prompt, cwd, model?, sandbox?, timeout_seconds?)` — synchronous.
   Short tasks only (under ~4 min). Blocks until done.

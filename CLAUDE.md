@@ -69,9 +69,11 @@ failure rather than improvising around it.
   commits there, and the broker pushes from that clone path.
 - **Sandbox is capped at `workspace-write`.** The broker rejects escalation
   flags by construction. Do not try to widen it; ask the user instead.
-- **Host differences.** Under Claude Desktop/Cowork the tools arrive through
-  the device bridge as `mcp__remote-devices__Codex_Broker__<name>` and every
-  tool call is capped at ~60s (hence the sub-45s rule for sync `codex_task`).
+- **Host differences.** A Claude Desktop extension exposes tools as
+  `mcp__Codex_Broker__<name>`; Cowork through the desktop bridge uses
+  `mcp__remote-devices__Codex_Broker__<name>`; and Claude Code CLI registration
+  uses `mcp__codex-broker__<name>`. Under Desktop/Cowork, every tool call is
+  capped at ~60s (hence the sub-45s rule for sync `codex_task`).
   In Claude Code the MCP timeout is configurable and typically higher, but
   keep background as the default for real work anyway — job state persists on
   disk (`~/.codex-broker/jobs/`) and survives caller timeouts.
@@ -83,6 +85,11 @@ failure rather than improvising around it.
   entries). `codex-delegation.skill` = zip of `codex-delegation/` wrapping
   `skill/`'s contents. Rebuild both when their inputs change; keep manifest,
   `server/package.json`, and `server.mjs` versions in lockstep.
+  Build the skill with `node scripts/build-skill.mjs`; use `--verify` to check it.
+  The packager zips working-tree bytes and the committed artifact is built on
+  Windows, so `--verify` assumes a `core.autocrlf=true` checkout. On a checkout
+  with LF endings it reports every file as differing; that is the line endings,
+  not a corrupt archive.
 - **docs/LESSONS.md is the debugging map.** Eight field-verified failure modes
   with symptoms and fixes. Check it before diagnosing anything Windows- or
   Desktop-host-related.

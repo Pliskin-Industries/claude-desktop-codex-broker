@@ -63,8 +63,8 @@ Add this to your Claude desktop app MCP config (adjust the absolute path):
 The tools then appear to Claude as `codex_task`, `codex_start`, etc.
 
 > **Claude Cowork cloud sessions:** the same tools are surfaced with a prefix,
-> e.g. `mcp__remote-devices__codex__codex_task`. The tool names and parameters
-> are identical — only the namespace differs.
+> e.g. `mcp__remote-devices__Codex_Broker__codex_task`. The tool names and
+> parameters are identical — only the namespace differs.
 
 ### Optional environment variables
 

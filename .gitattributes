@@ -1,0 +1,5 @@
+# Built archives. Git already detects these as binary by sniffing for NUL
+# bytes; saying so explicitly means a checkout can never line-ending-convert a
+# zip and corrupt it, whatever core.autocrlf is set to.
+*.skill binary
+*.mcpb binary

@@ -27,8 +27,10 @@ and the fifteen `mcp__codex-broker__*` tools appear. To use the broker from *any
 directory, ask Claude Code to register it user-scoped:
 
 ```bash
-claude mcp add --scope user codex-broker -- node /absolute/path/to/claude-desktop-codex-broker/server/server.mjs
+claude mcp add --scope user codex-broker -- node "$(git rev-parse --show-toplevel)/server/server.mjs"
 ```
+
+A literal absolute path also works when registering from outside the clone.
 
 ## Path B — manual
 
@@ -44,11 +46,12 @@ claude mcp add --scope user codex-broker -- node /absolute/path/to/claude-deskto
 
 ## Path C — you already run the broker in Claude Desktop / Cowork
 
-If the `.mcpb` extension is installed and working in chat, the machine-level
-prerequisites are already done: Codex CLI is installed and logged in, `gh` is
-authenticated, and the sandbox is proven. Claude Code does **not** inherit any
-of that from Desktop — the extension and the CLI are separate MCP hosts, so
-Claude Code needs its own registration. What's left is three steps.
+If the `.mcpb` extension can complete a real `codex_task` in chat, the
+Desktop-hosted broker can spawn an authenticated Codex CLI. Check `gh auth
+status` separately if you want to use the `gh_*` tools. Claude Code does **not**
+inherit the Desktop MCP registration — the extension and the CLI are separate
+MCP hosts, so Claude Code needs its own registration. What's left is three
+steps.
 
 1. **Get the source on disk with its dependencies.** The extension bundles its
    own `node_modules`, but its install directory is opaque and gets replaced on
@@ -64,11 +67,12 @@ Claude Code needs its own registration. What's left is three steps.
    Claude Code session, not just ones opened inside this repo:
 
    ```powershell
-   claude mcp add --scope user codex-broker -- node "C:\full\path\to\claude-desktop-codex-broker\server\server.mjs"
+   $serverPath = (Resolve-Path -LiteralPath .\server\server.mjs).Path
+   claude mcp add --scope user codex-broker -- node $serverPath
    ```
 
-   Use the real absolute path with backslashes, quoted. Project scope via the
-   repo's `.mcp.json` also works, but only inside the repo.
+   A literal absolute path also works when registering from outside the clone.
+   Project scope via the repo's `.mcp.json` also works, but only inside the repo.
 
 3. **Install the skill locally.** Claude Code reads `~/.claude/skills/`; a skill
    uploaded to your Claude *account* is a different copy and may be older.
@@ -78,9 +82,11 @@ Claude Code needs its own registration. What's left is three steps.
    ```
 
 Then restart Claude Code and confirm the fifteen `mcp__codex-broker__*` tools
-are listed. Tool names differ by host — `mcp__codex-broker__codex_start` in
-Claude Code vs `mcp__remote-devices__Codex_Broker__codex_start` in Cowork — so
-the skill refers to them by bare name.
+are listed. Tool names differ by host: a Desktop extension uses
+`mcp__Codex_Broker__codex_start`, Cowork uses
+`mcp__remote-devices__Codex_Broker__codex_start`, and Claude Code CLI uses
+`mcp__codex-broker__codex_start`. The skill therefore refers to tools by bare
+name.
 
 Running both hosts side by side is fine; they are independent server processes.
 They do *not* reliably share job state, though: job directories live under
