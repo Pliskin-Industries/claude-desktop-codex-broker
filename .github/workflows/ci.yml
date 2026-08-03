@@ -11,6 +11,9 @@ permissions:
 jobs:
   test:
     strategy:
+      # Report every cell. A failure on one OS says nothing about the other,
+      # and the two platforms fail these tests for entirely different reasons.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         # Quoted: unquoted YAML reads these as floats, so a version like

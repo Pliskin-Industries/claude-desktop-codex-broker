@@ -50,6 +50,13 @@ if (process.platform === "win32") {
   fs.copyFileSync(MOCK, codexLink);
   fs.chmodSync(codexLink, 0o755);
 
+  // mock-codex is ESM, and Node decides an extensionless entry point's module
+  // type from the nearest package.json. In the repo that resolves to
+  // server/package.json ("type": "module"), but the copy lands in a temp dir
+  // with no package.json at all, so Node parses it as CommonJS and dies on its
+  // own `import`. Declare the type next to the copy.
+  fs.writeFileSync(path.join(binDir, "package.json"), '{ "type": "module" }\n');
+
   // Mock gh for the v1.5.0 gh_* pass-through tests: echoes its argv.
   mockGh = path.join(binDir, "gh");
   fs.writeFileSync(mockGh, '#!/bin/sh\necho "MOCKGH $@"\n');
