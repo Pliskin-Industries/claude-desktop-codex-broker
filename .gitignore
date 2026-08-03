@@ -1,0 +1,11 @@
+# Server dependencies are installed with `npm ci --prefix server` and are
+# bundled into dist/codex-broker.mcpb at build time — never committed.
+server/node_modules/
+node_modules/
+
+# Build staging
+.build-stage/
+
+# OS noise
+.DS_Store
+Thumbs.db
