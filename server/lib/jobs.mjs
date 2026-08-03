@@ -35,6 +35,13 @@ import { jobsDir, spawnFailureMessage } from "./util.mjs";
 import { extractResult } from "./codex.mjs";
 
 const IS_WINDOWS = process.platform === "win32";
+const DEFAULT_EXIT_GRACE_MS = 2000;
+const configuredExitGraceMs = Number(process.env.CODEX_BROKER_EXIT_GRACE_MS);
+const EXIT_GRACE_MS =
+  Number.isFinite(configuredExitGraceMs) && configuredExitGraceMs > 0
+    ? Math.floor(configuredExitGraceMs)
+    : DEFAULT_EXIT_GRACE_MS;
+const firstSeenDeadWithoutExit = new Map();
 
 function generateJobId() {
   const ts = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
@@ -368,6 +375,7 @@ export function readJob(jobId) {
   }
 
   const alive = pidAlive(meta.pid);
+  if (hasExit || alive) firstSeenDeadWithoutExit.delete(jobId);
 
   let status;
   let reason = null;
@@ -383,9 +391,18 @@ export function readJob(jobId) {
   } else if (alive) {
     status = "running";
   } else {
-    // No exit file and the process is gone -> it died before recording status.
-    status = "failed";
-    reason = "process exited without recording status";
+    const now = Date.now();
+    const firstSeenDeadAt = firstSeenDeadWithoutExit.get(jobId);
+    if (firstSeenDeadAt === undefined) {
+      firstSeenDeadWithoutExit.set(jobId, now);
+      status = "running";
+    } else if (now - firstSeenDeadAt < EXIT_GRACE_MS) {
+      status = "running";
+    } else {
+      // No exit file and the process is gone -> it died before recording status.
+      status = "failed";
+      reason = "process exited without recording status";
+    }
   }
 
   const runtimeMs = (endedAtMs ?? Date.now()) - meta.startedAt;

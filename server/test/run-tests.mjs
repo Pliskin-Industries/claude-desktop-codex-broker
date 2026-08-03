@@ -6,7 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   computeCodexBinary,
@@ -18,6 +18,8 @@ import { buildTaskArgs } from "../lib/codex.mjs";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(HERE, "..", "server.mjs");
 const MOCK = path.join(HERE, "mock-codex");
+const TEST_EXIT_GRACE_MS = 50;
+process.env.CODEX_BROKER_EXIT_GRACE_MS = String(TEST_EXIT_GRACE_MS);
 
 // --- Test environment setup ------------------------------------------------
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-broker-test-"));
@@ -27,16 +29,32 @@ const workDir = path.join(tmpRoot, "work"); // codex cwd (need not be a git repo
 fs.mkdirSync(binDir, { recursive: true });
 fs.mkdirSync(brokerHome, { recursive: true });
 fs.mkdirSync(workDir, { recursive: true });
+process.env.CODEX_BROKER_HOME = brokerHome;
 
-// Place the mock first on PATH as `codex`.
-const codexLink = path.join(binDir, "codex");
-fs.copyFileSync(MOCK, codexLink);
-fs.chmodSync(codexLink, 0o755);
+let codexLink;
+let mockGh;
+let mockNodeOptions = process.env.NODE_OPTIONS || "";
+if (process.platform === "win32") {
+  // A copied node.exe is a genuinely spawnable PE executable. The preload
+  // dispatches by executable name, before Node tries to treat argv[0] as a JS
+  // entry point. It is inherited by the broker too, where it is a no-op.
+  codexLink = path.join(binDir, "codex.exe");
+  mockGh = path.join(binDir, "gh.exe");
+  fs.copyFileSync(process.execPath, codexLink);
+  fs.copyFileSync(process.execPath, mockGh);
+  const preload = pathToFileURL(path.join(HERE, "windows-mock-preload.mjs")).href;
+  mockNodeOptions = `${mockNodeOptions} --import=${preload}`.trim();
+} else {
+  // Place the mock first on PATH as `codex`.
+  codexLink = path.join(binDir, "codex");
+  fs.copyFileSync(MOCK, codexLink);
+  fs.chmodSync(codexLink, 0o755);
 
-// Mock gh for the v1.5.0 gh_* pass-through tests: echoes its argv.
-const mockGh = path.join(binDir, "gh");
-fs.writeFileSync(mockGh, '#!/bin/sh\necho "MOCKGH $@"\n');
-fs.chmodSync(mockGh, 0o755);
+  // Mock gh for the v1.5.0 gh_* pass-through tests: echoes its argv.
+  mockGh = path.join(binDir, "gh");
+  fs.writeFileSync(mockGh, '#!/bin/sh\necho "MOCKGH $@"\n');
+  fs.chmodSync(mockGh, 0o755);
+}
 
 const childEnv = {
   ...process.env,
@@ -44,8 +62,10 @@ const childEnv = {
   CODEX_BROKER_HOME: brokerHome,
   GH_BIN: mockGh,
   // Ensure no ambient overrides leak in.
-  CODEX_BIN: "",
+  CODEX_BIN: process.platform === "win32" ? codexLink : "",
   CODEX_MODEL: "",
+  CODEX_BROKER_EXIT_GRACE_MS: String(TEST_EXIT_GRACE_MS),
+  ...(process.platform === "win32" ? { NODE_OPTIONS: mockNodeOptions } : {}),
 };
 
 // --- Minimal MCP stdio JSON-RPC client -------------------------------------
@@ -248,6 +268,44 @@ async function runWindowsResolutionTests() {
 
 async function main() {
   await runWindowsResolutionTests();
+
+  await test("readJob gives a dead pid an exit-file grace window", async () => {
+    const { readJob } = await import("../lib/jobs.mjs");
+    const exited = spawn(process.execPath, ["-e", ""]);
+    const deadPid = exited.pid;
+    await new Promise((resolve, reject) => {
+      exited.once("error", reject);
+      exited.once("exit", resolve);
+    });
+
+    const jobId = "dead-pid-grace-window";
+    const jobDir = path.join(brokerHome, "jobs", jobId);
+    const outputLog = path.join(jobDir, "output.log");
+    fs.mkdirSync(jobDir, { recursive: true });
+    fs.writeFileSync(outputLog, "");
+    fs.writeFileSync(
+      path.join(jobDir, "meta.json"),
+      JSON.stringify({
+        job_id: jobId,
+        pid: deadPid,
+        startedAt: Date.now(),
+        outputLog,
+        lastMessageFile: path.join(jobDir, "last-message.txt"),
+        canceled: false,
+        timedOut: false,
+      })
+    );
+
+    const settling = readJob(jobId);
+    assert(settling.status === "running", `expected grace-window running status, got: ${settling.status}`);
+    await sleep(TEST_EXIT_GRACE_MS + 20);
+    const failed = readJob(jobId);
+    assert(failed.status === "failed", `expected failed after grace window, got: ${failed.status}`);
+    assert(
+      failed.reason === "process exited without recording status",
+      `unexpected failure reason: ${failed.reason}`
+    );
+  });
 
   await client.initialize();
   const tools = await client.request("tools/list", {});
