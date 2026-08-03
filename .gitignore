@@ -8,3 +8,7 @@ node_modules/
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Built artifacts are published on GitHub Releases, not committed. Build them
+# with scripts/build-mcpb.mjs and scripts/build-skill.mjs.
+dist/

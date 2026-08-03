@@ -52,9 +52,10 @@ flowchart TD
 
 ## Phase 3 — Install the broker extension
 
-- [ ] **3.1** In Claude Desktop: **Settings → Extensions** → drag `dist/codex-broker.mcpb` onto the page (or use "Install extension…").
+- [ ] **3.0** Download `codex-broker.mcpb` and `codex-delegation.skill` from the [latest release](https://github.com/GhengisPliskin/claude-desktop-codex-broker/releases/latest). CI builds them from the tagged source; they are not committed to the repo.
+- [ ] **3.1** In Claude Desktop: **Settings → Extensions** → drag `codex-broker.mcpb` onto the page (or use "Install extension…").
 - [ ] **3.2** Approve the prompt; confirm the extension shows as enabled.
-- [ ] **3.3** Save `dist/codex-delegation.skill` to your Claude account (upload it in a conversation, or Settings → Skills).
+- [ ] **3.3** Save `codex-delegation.skill` to your Claude account (upload it in a conversation, or Settings → Skills).
 
 ## Phase 4 — Verify
 
