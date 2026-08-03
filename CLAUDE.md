@@ -11,6 +11,15 @@ this repo to make Codex delegation work in Claude Code, follow the setup
 sequence below in order. Report each step's outcome; stop and surface any
 failure rather than improvising around it.
 
+**Running in a hosted container** (Claude Code on the web) instead of on the
+user's machine? Do not follow the sequence below — run `bash
+scripts/cloud-setup.sh` and read [docs/INSTALL-CLOUD.md](docs/INSTALL-CLOUD.md).
+Two prerequisites there are the user's to set and cannot be done from inside the
+container: allowlisting `api.openai.com` in the environment's network policy,
+and providing `CODEX_ACCESS_TOKEN` or `OPENAI_API_KEY` as an environment secret.
+A 403 on `api.openai.com` is an org policy denial — report it, never work around
+it. Diagnose with `node scripts/preflight.mjs`.
+
 ## Setup sequence for Claude Code
 
 1. **Check prerequisites.** All three must pass before anything else:
@@ -41,7 +50,7 @@ failure rather than improvising around it.
    If a copy already exists, replace it — the skill and broker version together.
 
 5. **Verify.**
-   - `node server/test/run-tests.mjs` (from `server/`) → expect 24/24 pass. The
+   - `node server/test/run-tests.mjs` (from `server/`) → expect 41/41 pass. The
      suite uses a mock codex on PATH; no network or OpenAI account needed.
    - Restart the Claude Code session so MCP servers reload. Tools appear as
      `mcp__codex-broker__<name>` (project scope) — fifteen tools: codex_task,
@@ -76,13 +85,16 @@ failure rather than improvising around it.
   keep background as the default for real work anyway — job state persists on
   disk (`~/.codex-broker/jobs/`) and survives caller timeouts.
 - **Tests are the merge gate.** `node server/test/run-tests.mjs` must stay
-  24/24 (or grow). The suite runs the server over real stdio JSON-RPC with a
+  41/41 (or grow). The suite runs the server over real stdio JSON-RPC with a
   mock codex binary; add tests the same way.
-- **`dist/` is built, not source.** `codex-broker.mcpb` = zip of
-  `manifest.json` + `package.json` + `node_modules/` + `server/` (no dir
-  entries). `codex-delegation.skill` = zip of `codex-delegation/` wrapping
-  `skill/`'s contents. Rebuild both when their inputs change; keep manifest,
-  `server/package.json`, and `server.mjs` versions in lockstep.
-- **docs/LESSONS.md is the debugging map.** Eight field-verified failure modes
+- **`dist/` is built, not source.** Build with `scripts/build-mcpb.sh` and
+  `scripts/build-skill.sh` — do not assemble the zips by hand. `codex-broker.mcpb`
+  = `manifest.json` + `package.json` + `node_modules/` + `server/` runtime
+  sources (no dir entries, no tests); `codex-delegation.skill` =
+  `codex-delegation/` wrapping `skill/`'s contents. Verify a built package with
+  `node scripts/verify-mcpb.mjs`, which unpacks it and drives the server over
+  real stdio JSON-RPC. Keep `manifest.json`, `server/package.json`, and
+  `server.mjs` versions in lockstep.
+- **docs/LESSONS.md is the debugging map.** Ten field-verified failure modes
   with symptoms and fixes. Check it before diagnosing anything Windows- or
   Desktop-host-related.

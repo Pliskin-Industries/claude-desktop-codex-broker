@@ -1,6 +1,7 @@
 # Git Sync Protocol
 
-You (Fable) run in a cloud container. Codex edits the user's local disk. GitHub
+In the cross-machine topology you run in one environment and Codex edits the
+user's local disk. GitHub
 is the only shared surface. Every write delegation goes through git or the work
 does not sync. Follow this exactly.
 
@@ -142,8 +143,6 @@ codex/<task-slug> branch — do not push; I handle the push.>", cwd=<cwd>)
 ```
 
 After Codex commits the revision, push it yourself: `git_push(cwd, "codex/<task-slug>")`.
-```
-```
 
 Then re-fetch and re-review (Step 3). Repeat until it meets your bar.
 

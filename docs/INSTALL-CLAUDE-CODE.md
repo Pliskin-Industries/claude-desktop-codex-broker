@@ -17,7 +17,7 @@ Then tell Claude Code:
 
 Claude Code reads `CLAUDE.md`, checks prerequisites (Node ≥ 18.18, Codex CLI,
 git), runs `npm ci --prefix server`, installs the `codex-delegation` skill to
-`~/.claude/skills/`, runs the 24-test suite, and walks you through the one step
+`~/.claude/skills/`, runs the 41-test suite, and walks you through the one step
 it cannot do for you: `codex login` (interactive, bills to your ChatGPT plan or
 API key).
 
@@ -38,7 +38,7 @@ claude mcp add --scope user codex-broker -- node /absolute/path/to/claude-deskto
 3. Register the server (project scope comes free via `.mcp.json`; user scope
    via the `claude mcp add` command above).
 4. Copy `skill/` to `~/.claude/skills/codex-delegation/`.
-5. Verify: `cd server && node test/run-tests.mjs` → 24/24. Restart Claude Code,
+5. Verify: `cd server && node test/run-tests.mjs` → 41/41. Restart Claude Code,
    confirm the tools are listed, then run a `codex_task` smoke test
    ("Reply with exactly: READY").
 
@@ -58,5 +58,5 @@ claude mcp add --scope user codex-broker -- node /absolute/path/to/claude-deskto
   [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Claude Desktop / Cowork install** (the .mcpb route): see
   [INSTALL-WINDOWS.md](INSTALL-WINDOWS.md).
-- **Something broken?** [LESSONS.md](LESSONS.md) — eight field-verified failure
+- **Something broken?** [LESSONS.md](LESSONS.md) — ten field-verified failure
   modes with symptoms, causes, and fixes.

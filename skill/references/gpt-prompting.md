@@ -167,7 +167,7 @@ change/design, not to validate it.
 
 <task>
 Find the strongest reasons this should not ship. Target: <diff or design>.
-Focus: <the specific risk areas Fable cares about>.
+Focus: <the specific risk areas you care about>.
 </task>
 
 <attack_surface>

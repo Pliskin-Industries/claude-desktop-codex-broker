@@ -1,6 +1,8 @@
 # Field-Testing Lessons
 
-Eight real defects found and fixed while bringing this system up on a Windows 11 machine with the Microsoft Store build of Claude Desktop. Recorded because every one of them produces confusing symptoms that would cost the next person hours.
+Ten real defects found and fixed while bringing this system up — lessons 1–8 on a Windows 11 machine with the Microsoft Store build of Claude Desktop, lessons 9–10 in a Claude Code on the web container. Recorded because every one of them produces confusing symptoms that would cost the next person hours.
+
+Lessons 1, 2, 3, 4, 6 and 7 are artifacts of the Windows/Desktop host and do not arise in a Linux container. Lessons 5 and 8 are Codex sandbox capability boundaries; whether 8 reproduces on Linux has not been verified.
 
 ## 1. The extension host is Electron, and `process.execPath` is a trap
 
@@ -65,6 +67,26 @@ Eight real defects found and fixed while bringing this system up on a Windows 11
 **Cause:** Codex CLI's workspace-write sandbox deny-ACLs the repo's `.git` directory for the sandbox user at session start (visible via `Get-Acl .git`: Deny Write/Delete ACEs for the sandbox user's SID, which take precedence over its Allow entries). Working-tree writes are permitted; history writes are not. The "Codex commits locally, broker pushes" loop assumed `.git` was writable — on current Codex builds it is not.
 
 **Fix (procedural, verified):** a `.git` created *by* the session is not protected. Have Codex `git clone --no-hardlinks` the repo into its temp directory, commit there, point `origin` at the GitHub URL, and call broker `git_push` with the temp clone's path as `cwd`. Sync the user's primary clone afterward (`git pull --ff-only`, or `git reset --hard origin/<branch>` if its tree was left dirty). Longer-term fix: a broker-side `git_commit` tool so commits, like pushes, happen outside the sandbox.
+
+## 9. In a hosted container, the proxy — not the broker — is usually what failed
+
+**Symptom:** Codex delegation fails in Claude Code on the web. The log shows a burst of `ERROR: Reconnecting... n/5` against `wss://api.openai.com/v1/responses`, then `stream disconnected before completion`. Everything about the install looks correct: the CLI is present, `codex login status` says logged in, the sandbox initializes.
+
+**Cause:** two independent things, easily confused with each other and with a broker bug.
+
+First, hosted sessions route outbound HTTPS through a policy-enforcing proxy. If `api.openai.com` is not on the environment's allowlist, the proxy refuses the CONNECT with `HTTP CONNECT failed with status 403`. This is an organization policy decision. It is not a misconfiguration, retrying does not help, and routing around it is not an acceptable fix.
+
+Second, Codex 0.146 *prefers* a WebSocket transport, and WebSocket upgrades are not supported through such proxies. Codex retries five times, gives up, and falls back to HTTPS — which works. So on a correctly allowlisted environment you will still see a wall of red `Reconnecting` errors before the run succeeds. That output looks like a hard failure and is not one.
+
+**Fix:** run `node scripts/preflight.mjs`, which classifies the failure rather than echoing a raw error — separating a policy denial from a TLS trust problem, a plain-HTTP-to-proxy mistake, and simple unreachability, and naming the exact host to allowlist. Treat the `Reconnecting` burst as noise if the run completes.
+
+## 10. Cloud containers are ephemeral, so authentication is a per-session step
+
+**Symptom:** Codex worked at the end of one hosted session and is "not logged in" at the start of the next, with nothing having changed.
+
+**Cause:** the container is rebuilt between sessions. `~/.codex/auth.json`, the globally installed Codex CLI, and `server/node_modules` do not survive. Nothing is corrupted; the machine is simply new.
+
+**Fix:** keep the credential in the *environment's* secret configuration rather than in the container, and re-authenticate on every session start from that secret. `scripts/cloud-setup.sh` does this non-interactively — `codex login --with-access-token` or `--with-api-key`, both reading from stdin — and `.claude/hooks/session-start.sh` runs it automatically. Interactive `codex login` is not an option: it needs a browser. Prefer `CODEX_ACCESS_TOKEN`, which reuses an existing ChatGPT plan, over `OPENAI_API_KEY`, which bills separately per token.
 
 ## Meta-lesson
 

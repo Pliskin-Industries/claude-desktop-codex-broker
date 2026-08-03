@@ -75,7 +75,7 @@ Extension updates do NOT restart the running server — the version card will li
 | Symptom | Cause / fix |
 |---|---|
 | Tools don't appear in a session | Extension not enabled, or app not fully restarted after install (tray-quit) |
-| `codex_task` fails instantly, no output | Check `%USERPROFILE%\.codex-broker\jobs\<id>\output.log` and `runner-boot.log` |
+| `codex_task` fails instantly, no output | Check `%USERPROFILE%\.codex-broker\jobs\<id>\output.log` (the separate `runner-boot.log` no longer exists — the runner was removed in v1.4.0) |
 | Push fails: "dubious ownership" | Broker v1.3.1+ handles this automatically; on older versions: `git config --global --add safe.directory "<project path>"` |
 | Push fails: auth error | `gh auth status` in PowerShell; re-run `gh auth login` if expired |
 | Job fails with rate-limit message in its log | Your ChatGPT plan's Codex usage limit — wait for the window to reset or switch to API-key auth |

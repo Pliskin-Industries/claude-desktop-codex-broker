@@ -6,9 +6,9 @@ description: >-
   "task codex", "have GPT implement/write this", "get a second opinion on this
   design", "adversarial review", "attack this plan/architecture", "codex status",
   "resume the codex task", or any implementation, test-writing, bugfix, or
-  code-review task while the codex broker MCP tools are present. Fable plans,
+  code-review task while the codex broker MCP tools are present. You plan,
   scopes, reviews, and integrates; Codex executes bounded implementation and
-  adversarial review. Git is the sync layer between Fable's cloud container and
+  adversarial review. Git is the sync layer between your environment and
   Codex's local disk.
 ---
 
@@ -33,9 +33,11 @@ Claude Code (registered via the repo's `.mcp.json` or `claude mcp add`) they
 appear as `mcp__codex-broker__<name>`. Same fifteen tools either way:
 
 - `codex_task(prompt, cwd, model?, sandbox?, timeout_seconds?)` — synchronous.
-  Short tasks only (under ~4 min). Blocks until done.
+  Short tasks only. Blocks until done, so it is bounded by the host's tool-call
+  timeout — see Task scoping rules for the real limit (~45s under the Cowork
+  bridge).
 - `codex_start(prompt, cwd, model?, sandbox?) -> job_id` — background. Use for
-  anything that might exceed ~4 min or is open-ended.
+  anything longer or open-ended. THE DEFAULT for real work.
 - `codex_status(job_id)` — poll a background job. `codex_result(job_id)` — fetch
   final output. `codex_cancel(job_id)` — stop a job.
 - `codex_review(cwd, focus?, timeout_seconds?, background?)` — read-only review.
@@ -65,7 +67,7 @@ more (network installs, writing outside the repo, secrets), stop and ask the use
 
 This is the core of the skill. Read the decision rule before every delegation.
 
-**Fable (you) keep:**
+**You (the orchestrator) keep:**
 - Initial planning, architecture, and task decomposition.
 - Crafting the Codex prompt (see `references/gpt-prompting.md`).
 - Quality control of everything Codex returns. You review every Codex diff
@@ -115,8 +117,15 @@ writing a non-trivial Codex prompt.
 
 ## Git sync protocol
 
-You work in a cloud container. Codex edits the user's *local* disk. GitHub is the
-only shared surface between the two. Get this wrong and work is lost.
+**First, determine which topology you are in — the whole protocol depends on it.**
+
+*Cross-machine (Claude Desktop / Cowork, and Claude Code driving a remote box):*
+you work in one environment, Codex edits the user's *local* disk, and GitHub is
+the only shared surface between the two. Get this wrong and work is lost.
+
+*Same-host (Claude Code on the web, or any setup where the broker runs beside
+you):* you and Codex share one filesystem. See "Same-host mode" below — most of
+this protocol collapses, and following it anyway wastes a full GitHub round trip.
 
 The full command sequence, branch conventions, and edge cases are in
 `references/git-protocol.md`. Load it before any delegation that writes code.
@@ -142,6 +151,38 @@ Summary of the loop:
    the branch back with feedback via `codex_resume`.
 6. **No remote fallback.** If there is no remote, stop and ask the user. Do not
    invent a sync mechanism.
+
+### Same-host mode
+
+When the broker runs beside you rather than on a remote machine — Claude Code on
+the web, or any setup where you and Codex share one filesystem — GitHub is no
+longer the only shared surface. It is not a shared surface at all; you are both
+looking at the same disk.
+
+In that topology:
+
+- **Skip steps 2, 5 and 6 of the loop.** There is nothing to push for Codex to
+  pull, and nothing to re-clone in order to review. Delegate with `cwd` set
+  directly to the working directory, then read the diff in place.
+- **A GitHub remote is no longer a precondition.** Local-only repos are fine.
+- **Review is still mandatory.** Sharing a filesystem changes how you *see* the
+  work, not whether you vet it. Codex output remains a proposal, never an
+  auto-merge.
+- **Branch discipline still applies.** Have Codex work on `codex/<task-slug>`,
+  not on `main`. Cheap to keep, and it preserves a clean revert.
+
+**What same-host mode does NOT remove:** the commit workaround. Lesson 8 in
+`docs/LESSONS.md` is that Codex's sandbox write-protects an existing repo's
+`.git`, so Codex may still be unable to commit in place even when the files are
+right beside it. That restriction was observed on Windows and **has not been
+verified on Linux**. Do not assume either way — try a commit, and if it fails on
+`.git/index.lock: Permission denied`, fall back to the broker's `git_commit`
+tool, or have Codex clone into its own temp dir as the cross-machine path
+describes.
+
+If you are unsure which topology you are in, check whether `cwd` for your own
+file reads and the `cwd` you would pass to `codex_task` are the same directory.
+If they are, you are same-host.
 
 ## Failure handling
 
@@ -180,7 +221,7 @@ Summary of the loop:
 
 ## Adversarial mode
 
-Cross-model review is valuable specifically because Fable's and Codex's errors
+Cross-model review is valuable specifically because your and Codex's errors
 are uncorrelated — Codex catches classes of mistakes you are blind to, and vice
 versa. Exploit that; do not defer to it.
 

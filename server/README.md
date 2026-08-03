@@ -22,10 +22,20 @@ The broker exposes these MCP tools:
 | `codex_result` | Final assistant message + exit status + session id; errors if still running. |
 | `codex_cancel` | Kill a job's process tree. |
 | `codex_review` | Run `codex exec review` (read-only) against a repo. Optional `focus` text; `background:true` returns a `job_id`. |
-| `codex_resume` | Continue a previous Codex session by `session_id` with a new prompt. |
+| `codex_resume` | Continue a previous Codex session by `thread_id` with a new prompt. |
+| `git_push` | Broker-side `git push` outside the sandbox, where credentials work. Never force-pushes. |
+| `git_pull` | Broker-side `git pull --ff-only`. |
+| `git_commit` | Broker-side stage + commit, outside the sandbox. |
+| `git_clone` | Broker-side credentialed clone. https, plus loopback http for a session-local git proxy. |
+| `gh_repo_create` | Create a GitHub repo from a local repository via `gh` and push. |
+| `gh_read` | Read-only allowlisted `gh` dispatcher (`pr` / `issue` / `run` / `release` / `repo`). |
+| `gh_pr_create` | Open a pull request via `gh`. Never merges. |
+| `gh_issue_create` | Create a GitHub issue via `gh`. |
 
-`codex_task` / `codex_result` / `codex_status` surface the Codex **session id**,
-which you pass to `codex_resume` to continue a thread.
+`codex_task` / `codex_result` / `codex_status` surface the Codex **thread id**,
+which you pass to `codex_resume` as `thread_id` to continue a thread. The
+parameter is deliberately not called `session_id` — the Cowork device bridge
+reserves and strips that name (see docs/LESSONS.md #4).
 
 ## Prerequisites
 
@@ -63,8 +73,9 @@ Add this to your Claude desktop app MCP config (adjust the absolute path):
 The tools then appear to Claude as `codex_task`, `codex_start`, etc.
 
 > **Claude Cowork cloud sessions:** the same tools are surfaced with a prefix,
-> e.g. `mcp__remote-devices__codex__codex_task`. The tool names and parameters
-> are identical — only the namespace differs.
+> e.g. `mcp__remote-devices__Codex_Broker__codex_task`. In Claude Code they
+> appear as `mcp__codex-broker__codex_task`. The tool names and parameters are
+> identical — only the namespace differs.
 
 ### Optional environment variables
 
