@@ -1,0 +1,10 @@
+# Installed by `npm ci --prefix server` during setup. The tracked source ships
+# without it; dist/codex-broker.mcpb vendors its own copy at build time.
+node_modules/
+
+# Broker job state (default CODEX_BROKER_HOME), in case anyone points it here.
+.codex-broker/
+
+# OS noise
+.DS_Store
+Thumbs.db

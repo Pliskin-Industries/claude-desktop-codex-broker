@@ -16,7 +16,7 @@ flowchart LR
 
 | Path | Contents |
 |---|---|
-| `server/` | Broker MCP server source (Node, zero-dependency runtime + @modelcontextprotocol/sdk), 24-test suite with a mock Codex harness |
+| `server/` | Broker MCP server source (Node, zero-dependency runtime + @modelcontextprotocol/sdk), 33-test suite with a mock Codex harness |
 | `skill/` | `codex-delegation` Claude skill — role architecture, git protocol, GPT prompting conventions |
 | `dist/` | Ready-to-install packages: `codex-broker.mcpb` (drag into Claude Desktop → Settings → Extensions) and `codex-delegation.skill` |
 | `docs/` | [Architecture](docs/ARCHITECTURE.md) · [Windows install guide](docs/INSTALL-WINDOWS.md) · [Field-testing lessons](docs/LESSONS.md) |

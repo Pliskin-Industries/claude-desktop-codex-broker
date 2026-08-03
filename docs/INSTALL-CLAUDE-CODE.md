@@ -17,7 +17,7 @@ Then tell Claude Code:
 
 Claude Code reads `CLAUDE.md`, checks prerequisites (Node ≥ 18.18, Codex CLI,
 git), runs `npm ci --prefix server`, installs the `codex-delegation` skill to
-`~/.claude/skills/`, runs the 24-test suite, and walks you through the one step
+`~/.claude/skills/`, runs the 33-test suite, and walks you through the one step
 it cannot do for you: `codex login` (interactive, bills to your ChatGPT plan or
 API key).
 
@@ -38,9 +38,56 @@ claude mcp add --scope user codex-broker -- node /absolute/path/to/claude-deskto
 3. Register the server (project scope comes free via `.mcp.json`; user scope
    via the `claude mcp add` command above).
 4. Copy `skill/` to `~/.claude/skills/codex-delegation/`.
-5. Verify: `cd server && node test/run-tests.mjs` → 24/24. Restart Claude Code,
+5. Verify: `cd server && node test/run-tests.mjs` → 33/33. Restart Claude Code,
    confirm the tools are listed, then run a `codex_task` smoke test
    ("Reply with exactly: READY").
+
+## Path C — you already run the broker in Claude Desktop / Cowork
+
+If the `.mcpb` extension is installed and working in chat, the machine-level
+prerequisites are already done: Codex CLI is installed and logged in, `gh` is
+authenticated, and the sandbox is proven. Claude Code does **not** inherit any
+of that from Desktop — the extension and the CLI are separate MCP hosts, so
+Claude Code needs its own registration. What's left is three steps.
+
+1. **Get the source on disk with its dependencies.** The extension bundles its
+   own `node_modules`, but its install directory is opaque and gets replaced on
+   every extension update — don't point Claude Code at it. Use a normal clone:
+
+   ```powershell
+   git clone https://github.com/GhengisPliskin/claude-desktop-codex-broker.git
+   cd claude-desktop-codex-broker
+   npm ci --prefix server
+   ```
+
+2. **Register the server user-scoped** so the tools are available in every
+   Claude Code session, not just ones opened inside this repo:
+
+   ```powershell
+   claude mcp add --scope user codex-broker -- node "C:\full\path\to\claude-desktop-codex-broker\server\server.mjs"
+   ```
+
+   Use the real absolute path with backslashes, quoted. Project scope via the
+   repo's `.mcp.json` also works, but only inside the repo.
+
+3. **Install the skill locally.** Claude Code reads `~/.claude/skills/`; a skill
+   uploaded to your Claude *account* is a different copy and may be older.
+
+   ```powershell
+   Copy-Item -Recurse -Force skill "$env:USERPROFILE\.claude\skills\codex-delegation"
+   ```
+
+Then restart Claude Code and confirm the fifteen `mcp__codex-broker__*` tools
+are listed. Tool names differ by host — `mcp__codex-broker__codex_start` in
+Claude Code vs `mcp__remote-devices__Codex_Broker__codex_start` in Cowork — so
+the skill refers to them by bare name.
+
+Running both hosts side by side is fine; they are independent server processes.
+They do *not* reliably share job state, though: job directories live under
+`~/.codex-broker/jobs/`, and the Microsoft Store build of Claude Desktop runs
+under MSIX virtualization, which can redirect that home path. Poll a job from
+the host that started it, or set `CODEX_BROKER_JOBS_DIR` to the same explicit
+absolute path in both.
 
 ## Notes
 

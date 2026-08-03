@@ -41,7 +41,7 @@ failure rather than improvising around it.
    If a copy already exists, replace it — the skill and broker version together.
 
 5. **Verify.**
-   - `node server/test/run-tests.mjs` (from `server/`) → expect 24/24 pass. The
+   - `node server/test/run-tests.mjs` (from `server/`) → expect 33/33 pass. The
      suite uses a mock codex on PATH; no network or OpenAI account needed.
    - Restart the Claude Code session so MCP servers reload. Tools appear as
      `mcp__codex-broker__<name>` (project scope) — fifteen tools: codex_task,
@@ -76,7 +76,7 @@ failure rather than improvising around it.
   keep background as the default for real work anyway — job state persists on
   disk (`~/.codex-broker/jobs/`) and survives caller timeouts.
 - **Tests are the merge gate.** `node server/test/run-tests.mjs` must stay
-  24/24 (or grow). The suite runs the server over real stdio JSON-RPC with a
+  33/33 (or grow). The suite runs the server over real stdio JSON-RPC with a
   mock codex binary; add tests the same way.
 - **`dist/` is built, not source.** `codex-broker.mcpb` = zip of
   `manifest.json` + `package.json` + `node_modules/` + `server/` (no dir
