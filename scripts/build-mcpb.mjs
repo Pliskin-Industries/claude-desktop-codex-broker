@@ -16,6 +16,14 @@ const outputPath = path.join(repoRoot, 'dist', 'codex-broker.mcpb');
 // the artifact already had rather than inventing one.
 const RUNTIME_EXCLUDED = /\.d\.ts$|\.map$/;
 
+// node_modules/.bin holds CLI launcher shims the extension never invokes — it
+// is started as `node server/server.mjs`. Excluding it also keeps the bundle
+// platform-independent: npm writes real .cmd/.ps1 shims there on Windows but
+// symlinks on POSIX, so including it would make the artifact differ by build
+// host and crash the packager on the symlinks. The previously published bundle
+// contained no .bin entries either.
+const EXCLUDED_DIRS = new Set(['.bin']);
+
 function sourceEntries() {
   if (!existsSync(nodeModulesRoot)) {
     throw new Error('server/node_modules is missing; run: npm ci --prefix server --omit=dev');
@@ -33,8 +41,10 @@ function sourceEntries() {
     for (const child of children) {
       const absolute = path.join(directory, child.name);
       const name = `${bundleDirectory}/${child.name}`;
-      if (child.isDirectory()) visit(absolute, name);
-      else if (child.isFile()) {
+      if (child.isDirectory()) {
+        if (EXCLUDED_DIRS.has(child.name)) continue;
+        visit(absolute, name);
+      } else if (child.isFile()) {
         if (RUNTIME_EXCLUDED.test(child.name)) continue;
         entries.push({ name, data: readFileSync(absolute), directory: false });
       } else throw new Error(`Unsupported source entry: ${path.relative(repoRoot, absolute)}`);
