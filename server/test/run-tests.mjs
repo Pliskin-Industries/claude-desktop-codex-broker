@@ -17,7 +17,7 @@ import { buildTaskArgs } from "../lib/codex.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(HERE, "..", "server.mjs");
-const MOCK = path.join(HERE, "mock-codex");
+const MOCK = path.join(HERE, "mock-codex.mjs");
 const TEST_EXIT_GRACE_MS = 50;
 process.env.CODEX_BROKER_EXIT_GRACE_MS = String(TEST_EXIT_GRACE_MS);
 
@@ -45,17 +45,18 @@ if (process.platform === "win32") {
   const preload = pathToFileURL(path.join(HERE, "windows-mock-preload.mjs")).href;
   mockNodeOptions = `${mockNodeOptions} --import=${preload}`.trim();
 } else {
-  // Place the mock first on PATH as `codex`.
-  codexLink = path.join(binDir, "codex");
-  fs.copyFileSync(MOCK, codexLink);
-  fs.chmodSync(codexLink, 0o755);
+  // The mock is ESM, and Node 18 cannot load an extensionless file as ESM under
+  // any arrangement: with no "type":"module" context it is parsed as CommonJS
+  // and dies on its own `import`, and with one it fails outright with
+  // ERR_UNKNOWN_FILE_EXTENSION. So the PATH entry cannot itself be the mock.
+  // Copy the mock under its real .mjs name and put a tiny sh shim on PATH,
+  // which also gives the mock the same argv shape a shebang would.
+  const mockCodex = path.join(binDir, "mock-codex.mjs");
+  fs.copyFileSync(MOCK, mockCodex);
 
-  // mock-codex is ESM, and Node decides an extensionless entry point's module
-  // type from the nearest package.json. In the repo that resolves to
-  // server/package.json ("type": "module"), but the copy lands in a temp dir
-  // with no package.json at all, so Node parses it as CommonJS and dies on its
-  // own `import`. Declare the type next to the copy.
-  fs.writeFileSync(path.join(binDir, "package.json"), '{ "type": "module" }\n');
+  codexLink = path.join(binDir, "codex");
+  fs.writeFileSync(codexLink, `#!/bin/sh\nexec "${process.execPath}" "${mockCodex}" "$@"\n`);
+  fs.chmodSync(codexLink, 0o755);
 
   // Mock gh for the v1.5.0 gh_* pass-through tests: echoes its argv.
   mockGh = path.join(binDir, "gh");

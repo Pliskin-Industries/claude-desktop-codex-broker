@@ -201,7 +201,7 @@ npm test          # node test/run-tests.mjs
 ```
 
 The suite spawns the real server over stdio JSON-RPC and drives it against a
-mock `codex` (`test/mock-codex`, placed first on `PATH`) — no network needed. It
+mock `codex` (`test/mock-codex.mjs`, reached via a shim first on `PATH`) — no network needed. It
 covers sync success, sync timeout kill, start→status→result→completion, the
 direct-spawn background model (no runner artifacts, broker-recorded exit),
 cancel, review, resume, and invalid-sandbox / invalid-cwd rejection.
