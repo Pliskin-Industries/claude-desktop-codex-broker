@@ -105,7 +105,7 @@ function renderSyncOutcome(kind, job, { timedOut, timeoutSeconds }) {
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "codex-broker", version: "1.5.0" },
+  { name: "codex-broker", version: "1.5.1" },
   { capabilities: { tools: {} } }
 );
 

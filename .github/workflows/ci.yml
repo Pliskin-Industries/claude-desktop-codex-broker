@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # Quoted: unquoted YAML reads these as floats, so a version like
+        # 18.20 would silently become 18.2 and resolve to the wrong Node.
+        node: ["18.18", "20"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci --prefix server
+      - run: node server/test/run-tests.mjs

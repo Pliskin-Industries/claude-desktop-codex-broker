@@ -1,0 +1,98 @@
+{
+  "manifest_version": "0.2",
+  "name": "codex-broker",
+  "display_name": "Codex Broker",
+  "version": "1.5.1",
+  "description": "Delegate coding tasks to OpenAI Codex (GPT-5.6 Sol) from Claude. Sync and background task tools wrapping the local Codex CLI, sandbox-capped at workspace-write.",
+  "author": {
+    "name": "GhengisPliskin"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/server.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/server.mjs"
+      ]
+    }
+  },
+  "tools": [
+    {
+      "name": "codex_task",
+      "description": "Run a short Codex coding task synchronously"
+    },
+    {
+      "name": "codex_start",
+      "description": "Start a long Codex task in the background, returns job_id"
+    },
+    {
+      "name": "codex_status",
+      "description": "Check a background Codex job"
+    },
+    {
+      "name": "codex_result",
+      "description": "Fetch the result of a background Codex job"
+    },
+    {
+      "name": "codex_cancel",
+      "description": "Cancel a background Codex job"
+    },
+    {
+      "name": "codex_review",
+      "description": "Read-only Codex code review of a directory"
+    },
+    {
+      "name": "codex_resume",
+      "description": "Continue a previous Codex session"
+    },
+    {
+      "name": "git_push",
+      "description": "Broker-side git push (outside Codex sandbox, credentials work). Never force."
+    },
+    {
+      "name": "git_pull",
+      "description": "Broker-side git pull --ff-only."
+    },
+    {
+      "name": "gh_repo_create",
+      "description": "Create a GitHub repo from a local repository via gh CLI and push."
+    },
+    {
+      "name": "git_commit",
+      "description": "Broker-side stage + commit (outside the Codex sandbox)"
+    },
+    {
+      "name": "git_clone",
+      "description": "Broker-side credentialed git clone (https only)"
+    },
+    {
+      "name": "gh_read",
+      "description": "Read-only allowlisted gh dispatcher (pr/issue/run/release/repo)"
+    },
+    {
+      "name": "gh_pr_create",
+      "description": "Create a pull request via gh (never merges)"
+    },
+    {
+      "name": "gh_issue_create",
+      "description": "Create a GitHub issue via gh"
+    }
+  ],
+  "keywords": [
+    "codex",
+    "openai",
+    "delegation",
+    "coding-agent"
+  ],
+  "compatibility": {
+    "platforms": [
+      "win32",
+      "darwin",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=18.18.0"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18.18"
+      - run: npm ci --prefix server --omit=dev
+      - run: node server/test/run-tests.mjs
+      - run: node scripts/build-mcpb.mjs
+      - run: node scripts/build-skill.mjs
+      - run: node scripts/build-mcpb.mjs --verify
+      - run: node scripts/build-skill.mjs --verify
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${{ github.ref_name }}"
+          dist/codex-broker.mcpb
+          dist/codex-delegation.skill
+          --generate-notes

@@ -267,6 +267,18 @@ async function runWindowsResolutionTests() {
 }
 
 async function main() {
+  await test("manifest, package, and server versions stay in lockstep", async () => {
+    const repoRoot = path.resolve(HERE, "..", "..");
+    const manifestVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, "manifest.json"), "utf8")).version;
+    const packageVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, "server", "package.json"), "utf8")).version;
+    const serverSource = fs.readFileSync(path.join(repoRoot, "server", "server.mjs"), "utf8");
+    const serverVersion = serverSource.match(/name:\s*["']codex-broker["']\s*,\s*version:\s*["']([^"']+)["']/)?.[1];
+    assert(
+      manifestVersion === packageVersion && packageVersion === serverVersion,
+      `version mismatch: manifest.json=${manifestVersion}, server/package.json=${packageVersion}, server/server.mjs=${serverVersion ?? "not found"}`
+    );
+  });
+
   await runWindowsResolutionTests();
 
   await test("readJob gives a dead pid an exit-file grace window", async () => {
