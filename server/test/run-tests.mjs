@@ -15,7 +15,7 @@ import {
 } from "../lib/util.mjs";
 import { buildResumeArgs, buildReviewArgs, buildTaskArgs } from "../lib/codex.mjs";
 import { applyChanges, report as configReport } from "../../scripts/configure-codex.mjs";
-import { correlate, errorBuckets, findJob, report as forensicsReport } from "../../scripts/job-forensics.mjs";
+import { correlate, errorBuckets, findJob, report as forensicsReport } from "../lib/forensics.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(HERE, "..", "server.mjs");
@@ -677,6 +677,56 @@ async function main() {
     const rep = forensicsReport(jobDir, { events: false, windowSeconds: 120 });
     assert(/window:\s+2026-08-31T12:25:11\.190Z → 2026-08-31T13:40:53\.628Z\s+\(76 min\)/.test(rep), `no window line:\n${rep}`);
     assert(/2026-08-31T12:45Z\s+x\s+2/.test(rep) && /VERDICT:/.test(rep) && /## Last 10 log lines/.test(rep), `report shape:\n${rep}`);
+  });
+
+  await test("a job that dies in a connection storm gets an automatic forensics section", async () => {
+    const s = await client.call("codex_start", { prompt: "NETFAIL storm", cwd: workDir });
+    const jobId = extractJobId(s.text);
+    let fin = null;
+    for (let i = 0; i < 40; i++) {
+      await sleep(500);
+      const p = await client.call("codex_status", { job_id: jobId });
+      if (/status: (completed|failed)/.test(p.text)) {
+        fin = p.text;
+        break;
+      }
+    }
+    assert(fin && /status: failed \(exit 1\)/.test(fin), `expected failed: ${fin}`);
+    assert(/Forensics \(auto; docs\/LESSONS\.md #9\):/.test(fin), `status lacks forensics:\n${fin}`);
+    assert(/connection errors by UTC minute: \d{2}:\d{2}Z x\d+/.test(fin) && /VERDICT: /.test(fin), `forensics shape:\n${fin}`);
+    const r = await client.call("codex_result", { job_id: jobId }, 60000);
+    assert(r.isError && /Forensics \(auto/.test(r.text) && /full report: node scripts\/job-forensics\.mjs/.test(r.text), `result lacks forensics:\n${r.text}`);
+    // A clean failure (no connection errors) gets no forensics block.
+    const f = await client.call("codex_task", { prompt: "FAIL plainly", cwd: workDir, timeout_seconds: 30 }, 60000);
+    assert(f.isError && !/Forensics/.test(f.text), `plain failure wrongly got forensics:\n${f.text}`);
+  });
+
+  await test("launcher runs the server from a checkout when configured, else the bundled copy", async () => {
+    const repoRoot = path.join(HERE, "..", "..");
+    const boot = (repo) =>
+      new Promise((resolve) => {
+        const p = spawn(process.execPath, [path.join(HERE, "..", "launch.mjs")], { env: { ...childEnv, CODEX_BROKER_REPO: repo }, stdio: ["pipe", "pipe", "pipe"] });
+        let err = "";
+        const done = (v) => {
+          try {
+            p.kill("SIGKILL");
+          } catch {
+            /* ignore */
+          }
+          resolve(v);
+        };
+        p.stderr.on("data", (d) => {
+          err += d.toString();
+          if (/MCP server running/.test(err)) done(err);
+        });
+        setTimeout(() => done(err), 8000);
+      });
+    const fromCheckout = await boot(repoRoot);
+    assert(/launcher: running from checkout/.test(fromCheckout) && /MCP server running/.test(fromCheckout), `checkout boot:\n${fromCheckout}`);
+    const bundled = await boot(path.join(tmpRoot, "not-a-checkout"));
+    assert(/launcher: running bundled server \(no server\/server\.mjs under/.test(bundled) && /MCP server running/.test(bundled), `bundled boot:\n${bundled}`);
+    const none = await boot("");
+    assert(/running bundled server \(no checkout configured\)/.test(none), `empty boot:\n${none}`);
   });
 
   // ---- v1.5.0: git_commit / git_clone / gh_read / gh_pr_create / gh_issue_create

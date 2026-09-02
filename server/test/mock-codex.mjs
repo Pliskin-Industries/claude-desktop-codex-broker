@@ -79,6 +79,9 @@ if (promptFromStdin) {
 const sleepMatch = prompt.match(/SLEEP=(\d+)/);
 const sleepSeconds = sleepMatch ? parseInt(sleepMatch[1], 10) : 0;
 const shouldFail = /\bFAIL\b/.test(prompt);
+// NETFAIL: emulate the connection-error storm of docs/LESSONS.md #9 (timestamped
+// tracing lines on stderr, JSON reconnect events on stdout), then exit 1.
+const netFail = /\bNETFAIL\b/.test(prompt);
 
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
@@ -90,6 +93,15 @@ emit({ type: "thread.started", thread_id: sessionId });
 emit({ type: "turn.started" });
 
 function finish() {
+  if (netFail) {
+    const stamp = new Date().toISOString();
+    for (let n = 1; n <= 3; n++) {
+      process.stderr.write(`${stamp} ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: No such host is known. (os error 11001), url: wss://chatgpt.com/backend-api/codex/responses\n`);
+      emit({ type: "error", message: `Reconnecting... ${n}/5 (stream disconnected before completion: No such host is known. (os error 11001))` });
+    }
+    emit({ type: "turn.failed", error: { message: "stream disconnected before completion" } });
+    process.exit(1);
+  }
   if (shouldFail) {
     emit({ type: "error", message: "mock-codex simulated failure" });
     process.stderr.write("codex error: simulated failure\n");

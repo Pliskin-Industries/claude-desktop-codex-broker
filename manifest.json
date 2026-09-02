@@ -9,12 +9,23 @@
   },
   "server": {
     "type": "node",
-    "entry_point": "server/server.mjs",
+    "entry_point": "server/launch.mjs",
     "mcp_config": {
       "command": "node",
       "args": [
-        "${__dirname}/server/server.mjs"
-      ]
+        "${__dirname}/server/launch.mjs"
+      ],
+      "env": {
+        "CODEX_BROKER_REPO": "${user_config.repo_path}"
+      }
+    }
+  },
+  "user_config": {
+    "repo_path": {
+      "type": "directory",
+      "title": "Broker checkout (optional)",
+      "description": "Folder of a git clone of claude-desktop-codex-broker with `npm ci --prefix server` done. When set, the extension runs the broker from that checkout, so updating is `git pull` plus quitting Claude Desktop from the tray and reopening — no rebuild, no reinstall. Leave blank to run the bundled copy.",
+      "required": false
     }
   },
   "tools": [

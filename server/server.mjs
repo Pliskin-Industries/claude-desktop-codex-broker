@@ -27,6 +27,8 @@ import {
 } from "./lib/util.mjs";
 import { buildResumeArgs, buildReviewArgs, buildTaskArgs } from "./lib/codex.mjs";
 import { runPlainCommand } from "./lib/jobs.mjs";
+import { hasConnectionErrors, summary as forensicsSummary } from "./lib/forensics.mjs";
+import { jobsDir } from "./lib/util.mjs";
 import {
   resolveGitBinary,
   resolveGhBinary,
@@ -55,6 +57,29 @@ function sessionLine(sessionId) {
     : `Session id: (not detected in codex output)`;
 }
 
+// Automatic forensics (lib/forensics.mjs): for a failed job, or a running job
+// past the stall threshold, whose log shows connection errors, append the
+// error-minute buckets, the host's sleep/Wi-Fi events, and a verdict. Nobody
+// has to remember a script (docs/LESSONS.md #9). Cached per job so repeated
+// polls do not re-query the event log; running jobs refresh every 60s.
+const forensicsCache = new Map();
+function forensicsLines(jobId, job) {
+  if (!jobId || !job) return [];
+  const interesting = job.status === "failed" || (job.status === "running" && job.stallWarning);
+  if (!interesting || !hasConnectionErrors(job.logText)) return [];
+  const key = `${job.status}:${job.exitCode ?? ""}`;
+  const cached = forensicsCache.get(jobId);
+  if (cached && cached.key === key && (job.status !== "running" || Date.now() - cached.at < 60000)) return cached.lines;
+  let lines;
+  try {
+    lines = ["", ...forensicsSummary(path.join(jobsDir(), jobId)).split("\n")];
+  } catch (e) {
+    lines = ["", `Forensics unavailable: ${e && e.message ? e.message : e}`];
+  }
+  forensicsCache.set(jobId, { key, at: Date.now(), lines });
+  return lines;
+}
+
 // Render the outcome of a finished/awaited sync job into concise text.
 function renderSyncOutcome(kind, job, { timedOut, timeoutSeconds }) {
   if (!job) return textResult(`${kind}: job record missing after start.`, true);
@@ -68,6 +93,7 @@ function renderSyncOutcome(kind, job, { timedOut, timeoutSeconds }) {
     );
     header.push(sessionLine(job.sessionId));
     header.push(`Runtime: ${job.runtimeSeconds}s`);
+    header.push(...forensicsLines(job.job_id, job));
     header.push("");
     if (job.finalMessage) {
       header.push("Partial final message:");
@@ -92,6 +118,7 @@ function renderSyncOutcome(kind, job, { timedOut, timeoutSeconds }) {
   header.push(`Status: failed (${job.reason || "unknown"})`);
   header.push(sessionLine(job.sessionId));
   header.push(`Runtime: ${job.runtimeSeconds}s`);
+  header.push(...forensicsLines(job.job_id, job));
   header.push("");
   if (job.finalMessage) {
     header.push("Final message (if any):");
@@ -469,6 +496,7 @@ function handleStatus(args) {
         `codex_cancel it if it does not recover; start with max_idle_seconds to have the broker do this automatically.`
     );
   }
+  lines.push(...forensicsLines(jobId, job));
   lines.push(``, `Last output lines:`, lastLines(job.logText, 20) || "(no output yet)");
   return textResult(lines.join("\n"), false);
 }
@@ -491,6 +519,7 @@ function handleResult(args) {
     `exit: ${job.exitCode ?? "n/a"}`,
     `runtime: ${job.runtimeSeconds}s`,
     sessionLine(job.sessionId),
+    ...forensicsLines(jobId, job),
     ``,
     job.finalMessage || lastLines(job.logText, 20) || "(no final message)",
   ];

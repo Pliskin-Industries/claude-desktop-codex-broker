@@ -26,6 +26,8 @@ Eight real defects found and fixed while bringing this system up on a Windows 11
 
 **Fix (procedural):** remove extension → tray-quit → reopen → fresh install. Verify which code is live from behavior or tool schemas, never from the version card.
 
+**Fix (v1.6.0, structural):** the bundle's entry point is now `server/launch.mjs`, which runs the broker from a git checkout when the extension's "Broker checkout" setting points at one. Updates become `git pull` + tray-restart; the launcher prints `running from checkout <path>` or `running bundled server (<reason>)` on stderr so there is no guessing which code is live.
+
 ## 4. The bridge strips parameters named `session_id`
 
 **Symptom:** one tool consistently received an empty required parameter that the caller demonstrably sent; sibling parameters (`job_id`, `prompt`, `cwd`) passed fine.

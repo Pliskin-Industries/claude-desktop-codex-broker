@@ -33,6 +33,7 @@ function sourceEntries() {
     { name: 'manifest.json', data: readFileSync(path.join(repoRoot, 'manifest.json')), directory: false },
     { name: 'package.json', data: readFileSync(path.join(serverRoot, 'package.json')), directory: false },
     { name: 'server/server.mjs', data: readFileSync(path.join(serverRoot, 'server.mjs')), directory: false },
+    { name: 'server/launch.mjs', data: readFileSync(path.join(serverRoot, 'launch.mjs')), directory: false },
   ];
 
   function visit(directory, bundleDirectory) {

@@ -22,15 +22,16 @@ flowchart LR
 | `docs/` | [Architecture](docs/ARCHITECTURE.md) · [Windows install guide](docs/INSTALL-WINDOWS.md) · [Field-testing lessons](docs/LESSONS.md) |
 
 Built packages are published on the
-[Releases page](https://github.com/GhengisPliskin/claude-desktop-codex-broker/releases/latest),
+[Releases page](https://github.com/Pliskin-Industries/claude-desktop-codex-broker/releases/latest),
 not committed to the repo — CI builds them from source on each tagged version.
 
 ## Quick start — Claude Desktop / Cowork
 
 1. Prerequisites: Node 18.18+, `npm install -g @openai/codex`, `codex login` (ChatGPT subscription or API key), GitHub CLI (`gh auth login`) for repo operations.
-2. Download `codex-broker.mcpb` from the [latest release](https://github.com/GhengisPliskin/claude-desktop-codex-broker/releases/latest), then Claude Desktop → Settings → Extensions → drag the file in.
-3. Download `codex-delegation.skill` from the same release and save it to your Claude account (upload in the conversation or Settings → Skills).
-4. Start a new Cowork session — the tools appear as `mcp__remote-devices__Codex_Broker__*`.
+2. Download `codex-broker.mcpb` from the [latest release](https://github.com/Pliskin-Industries/claude-desktop-codex-broker/releases/latest), then Claude Desktop → Settings → Extensions → drag the file in.
+3. Optional but recommended: clone this repo, run `npm ci --prefix server`, and set the extension's **Broker checkout** setting to the clone. From then on a broker update is `git pull` plus a tray-restart of Claude Desktop — no rebuild, no reinstall.
+4. Download `codex-delegation.skill` from the same release and save it to your Claude account (upload in the conversation or Settings → Skills).
+5. Start a new Cowork session — the tools appear as `mcp__remote-devices__Codex_Broker__*`.
 
 Full walkthrough with verification steps: [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md).
 

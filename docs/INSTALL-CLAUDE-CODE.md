@@ -6,7 +6,7 @@ setup.
 ## Path A — let Claude Code set itself up (recommended)
 
 ```bash
-git clone https://github.com/GhengisPliskin/claude-desktop-codex-broker.git
+git clone https://github.com/Pliskin-Industries/claude-desktop-codex-broker.git
 cd claude-desktop-codex-broker
 claude
 ```
@@ -58,7 +58,7 @@ steps.
    every extension update — don't point Claude Code at it. Use a normal clone:
 
    ```powershell
-   git clone https://github.com/GhengisPliskin/claude-desktop-codex-broker.git
+   git clone https://github.com/Pliskin-Industries/claude-desktop-codex-broker.git
    cd claude-desktop-codex-broker
    npm ci --prefix server
    ```
@@ -115,5 +115,5 @@ registration in `~/.claude.json` actually uses.
   [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Claude Desktop / Cowork install** (the .mcpb route): see
   [INSTALL-WINDOWS.md](INSTALL-WINDOWS.md).
-- **Something broken?** [LESSONS.md](LESSONS.md) — eight field-verified failure
+- **Something broken?** [LESSONS.md](LESSONS.md) — nine field-verified failure
   modes with symptoms, causes, and fixes.

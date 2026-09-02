@@ -64,9 +64,10 @@ the pipeline or the network is broken must cite the job's `output.log` path
 and tail plus the timestamp correlation that supports the diagnosis. Shell
 checks taken at a different minute are not evidence. A recommendation to
 change system state (DNS, power, drivers) without that correlation is
-returned, not ruled on. The correlation is mechanical:
-`node scripts/job-forensics.mjs <job_id>` from the broker repo (see
-"Escalating to Fable" below).
+returned, not ruled on. The correlation is automatic: `codex_status` and
+`codex_result` append a `Forensics (auto)` block with a VERDICT line to any
+failed or stalled job whose log shows connection errors. Paste that block
+(see "Escalating to Fable" below).
 
 ## Escalating to Fable (Opus-orchestrated sessions)
 
@@ -77,10 +78,12 @@ proposes 4 without a line from 2 behind it:
 1. **Decision requested** — one sentence; options (a)/(b) if there are two.
 2. **Verified** — what you ran or read, with the output that supports each
    claim: commands, file paths and line numbers, job_ids with their job-dir
-   path. For any pipeline failure, paste the output of
-   `node scripts/job-forensics.mjs <job_id>` verbatim (it finds the job across
-   broker homes, buckets the connection errors, pulls the host's sleep and
-   Wi-Fi events for the window, and prints a correlation verdict).
+   path. For any pipeline failure, paste the `Forensics (auto)` block that
+   `codex_result` (or `codex_status`) printed for the job, verbatim — it holds
+   the error minutes, the host's sleep and Wi-Fi events for the window, the
+   log path, and a VERDICT line. If the job predates v1.6.0 or the block is
+   missing, `node scripts/job-forensics.mjs <job_id>` from the broker repo on
+   the user's machine produces the full report.
 3. **Inferred** — conclusions that go beyond 2, labeled as such. "This is not
    the machine's edge" belongs here unless 2 proves it.
 4. **Proposed system-state change** — DNS, power, drivers, config.toml,
@@ -270,11 +273,11 @@ Summary of the loop:
   infrastructure failure: (1) read the job's `output.log` — CLI jobs live under
   the `CODEX_BROKER_HOME` the registration set (on this user's machine
   `~/.codex-broker-cli/jobs/`), not necessarily `~/.codex-broker/jobs/`; every
-  job has one, failed or not; (2) run `node scripts/job-forensics.mjs
-  <job_id>` from the broker repo — on Windows it correlates the error minutes
+  job has one, failed or not; (2) read the `Forensics (auto)` block in
+  `codex_result` / `codex_status` — on Windows it correlates the error minutes
   with `Kernel-Power` 506/507 (Modern Standby enter/exit) and `WLAN-AutoConfig`
-  8001/8003 and prints a verdict; (3) ask whether the laptop was on AC with
-  the lid open. The broker passes `features.prevent_idle_sleep=true`
+  8001/8003 and prints a VERDICT; a `HOST:` verdict ends the network theory;
+  (3) ask whether the laptop was on AC with the lid open. The broker passes `features.prevent_idle_sleep=true`
   on every spawn and the setup script writes it into config.toml, but lid
   close and battery policies still sleep the machine. Re-delegate only after
   the cause is known; a stalled job is `codex_cancel`ed, never left running.

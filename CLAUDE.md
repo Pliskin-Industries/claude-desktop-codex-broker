@@ -104,15 +104,26 @@ failure rather than improvising around it.
   `CODEX_BROKER_KEEP_AWAKE=0`); `CODEX_BROKER_TRANSPORT=https` opts in to an
   HTTPS-only ChatGPT provider. Bursts of `No such host is known (os error
   11001)` in a job log mean the machine slept or the link dropped, not DNS
-  (docs/LESSONS.md #9). `node scripts/job-forensics.mjs <job_id>` finds the
-  job across broker homes, buckets the errors, pulls the host's sleep and
-  Wi-Fi events, and prints a correlation verdict; run it before proposing any
-  system change, and paste its output into any escalation.
+  (docs/LESSONS.md #9). The broker appends a forensics verdict to
+  `codex_status` / `codex_result` for such jobs automatically; paste that
+  block into any escalation before proposing a system change.
 - **Tests are the merge gate.** `node server/test/run-tests.mjs` must report
   `0 failed`. Do not restate the total in docs — it has drifted twice, once
   advertising a count that had never actually passed. The suite prints its own
   totals. It runs the server over real stdio JSON-RPC with a mock codex binary;
   add tests the same way.
+- **The extension can run from this checkout.** `server/launch.mjs` is the
+  `.mcpb` entry point: when the extension's "Broker checkout" setting
+  (`CODEX_BROKER_REPO`) names a clone with `server/node_modules` installed, it
+  imports that clone's `server/server.mjs`; otherwise the bundled copy. So a
+  server change reaches Claude Desktop/Cowork by `git pull` + tray-restart,
+  with no rebuild or reinstall. A rebuild is only needed when the bundled
+  fallback itself should change (a new release).
+- **Failed jobs explain themselves.** `codex_status` / `codex_result` append
+  an automatic forensics block (`server/lib/forensics.mjs`) to any failed or
+  stalled job whose log shows connection errors: error minutes, the host's
+  sleep/Wi-Fi events, and a verdict. `scripts/job-forensics.mjs <job_id>` is
+  the same analysis as a full report for older jobs.
 - **`dist/` is built, not source.** `codex-broker.mcpb` = zip of
   `manifest.json` + `package.json` + `node_modules/` + `server/` (no dir
   entries). `codex-delegation.skill` = zip of `codex-delegation/` wrapping
