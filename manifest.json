@@ -2,8 +2,8 @@
   "manifest_version": "0.2",
   "name": "codex-broker",
   "display_name": "Codex Broker",
-  "version": "1.5.1",
-  "description": "Delegate coding tasks to OpenAI Codex (GPT-5.6 Sol) from Claude. Sync and background task tools wrapping the local Codex CLI, sandbox-capped at workspace-write.",
+  "version": "1.6.0",
+  "description": "Delegate coding tasks to OpenAI Codex (currently GPT-5.6 Sol; model and effort defaults live in ~/.codex/config.toml) from Claude. Sync and background task tools wrapping the local Codex CLI, sandbox-capped at workspace-write.",
   "author": {
     "name": "GhengisPliskin"
   },

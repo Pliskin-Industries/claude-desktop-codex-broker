@@ -188,6 +188,22 @@ export function resolveModel(param) {
   return null;
 }
 
+// max_idle_seconds for background jobs: omitted/0 => null (no idle kill);
+// otherwise an integer >= MIN_IDLE_SECONDS. Idle is measured as time since
+// the job's output.log last grew, so the floor only guards against typos —
+// a real stall guard should be minutes (the skill suggests 1200).
+export const MIN_IDLE_SECONDS = 5;
+export function validateIdleSeconds(value) {
+  if (value === undefined || value === null || value === 0) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < MIN_IDLE_SECONDS) {
+    throw new ValidationError(
+      `max_idle_seconds must be 0 (off) or a number >= ${MIN_IDLE_SECONDS}, got "${value}".`
+    );
+  }
+  return Math.floor(n);
+}
+
 export function clampTimeoutSeconds(value, def) {
   if (value === undefined || value === null) return def;
   const n = Number(value);

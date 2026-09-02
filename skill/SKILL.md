@@ -1,8 +1,8 @@
 ---
 name: codex-delegation
 description: >-
-  Delegate scoped coding work to OpenAI's GPT-5.6 Sol model via the Codex broker
-  tools when they are available in this session. Use for "delegate to codex",
+  Delegate scoped coding work to OpenAI's Codex (currently GPT-5.6 Sol) via the
+  Codex broker tools when they are available in this session. Use for "delegate to codex",
   "task codex", "have GPT implement/write this", "get a second opinion on this
   design", "adversarial review", "attack this plan/architecture", "codex status",
   "resume the codex task", or any implementation, test-writing, bugfix, or
@@ -17,8 +17,9 @@ description: >-
 Author: GhengisPliskin
 
 You are Claude, orchestrating from a Cowork session or from Claude Code. Codex
-(GPT-5.6 Sol) is a second model you can hand scoped work to through broker MCP
-tools. You own planning, quality control, integration, git, and final
+(currently GPT-5.6 Sol; the model and effort defaults live in
+`~/.codex/config.toml`, never in this skill or in tool calls) is a second model
+you can hand scoped work to through broker MCP tools. You own planning, quality control, integration, git, and final
 accountability. Codex is a bounded executor and an uncorrelated second pair of
 eyes. It is never the decision-maker.
 
@@ -52,6 +53,46 @@ Three tiers, each pinned to its strongest role:
   for tightly scoped single-file work or if ultra latency hurts; **xhigh** below
   that. Set via `model_reasoning_effort` in `~/.codex/config.toml` (global —
   affects every Codex session on the machine; note it in the handoff when changed).
+  When a new OpenAI model ships, change both defaults in one idempotent command
+  from the broker repo: `node scripts/configure-codex.mjs --model <id> --effort
+  ultra` (backs up first). Leave `model` unset in delegation calls so the
+  config.toml default wins; hardcoding a model name anywhere else is how the
+  default drifts.
+
+Evidence rule for escalations (any tier, ratified 2026-09-01): a claim that
+the pipeline or the network is broken must cite the job's `output.log` path
+and tail plus the timestamp correlation that supports the diagnosis. Shell
+checks taken at a different minute are not evidence. A recommendation to
+change system state (DNS, power, drivers) without that correlation is
+returned, not ruled on. The correlation is mechanical:
+`node scripts/job-forensics.mjs <job_id>` from the broker repo (see
+"Escalating to Fable" below).
+
+## Escalating to Fable (Opus-orchestrated sessions)
+
+Fable rules on decisions, not on narratives. An escalation is one block per
+decision, in this order, and Fable returns any block that mixes 2 and 3 or
+proposes 4 without a line from 2 behind it:
+
+1. **Decision requested** — one sentence; options (a)/(b) if there are two.
+2. **Verified** — what you ran or read, with the output that supports each
+   claim: commands, file paths and line numbers, job_ids with their job-dir
+   path. For any pipeline failure, paste the output of
+   `node scripts/job-forensics.mjs <job_id>` verbatim (it finds the job across
+   broker homes, buckets the connection errors, pulls the host's sleep and
+   Wi-Fi events for the window, and prints a correlation verdict).
+3. **Inferred** — conclusions that go beyond 2, labeled as such. "This is not
+   the machine's edge" belongs here unless 2 proves it.
+4. **Proposed system-state change** — DNS, power, drivers, config.toml,
+   registrations. Omit the block if none. Each proposal cites the evidence
+   line from 2 that justifies it.
+5. **Recommendation from this tier** — and what you will do in the meantime
+   (e.g. implement the mechanical item directly) so Fable's latency costs
+   nothing.
+
+Ready-to-implement items with a confirmed bug and a full spec do not wait for
+a ruling; do them and report. Rulings are for contract changes, normative
+questions, and anything that spends the user's system state or money.
 
 Prompt-filter gotcha: OpenAI's safety layer kills review prompts framed as
 "attack / bypass / escape-hatch enumeration" with a cybersecurity flag. Frame
@@ -78,11 +119,17 @@ Same fifteen tools whichever prefix is in play:
 
 - `codex_task(prompt, cwd, model?, sandbox?, timeout_seconds?)` — synchronous.
   Short tasks only (under ~4 min). Blocks until done.
-- `codex_start(prompt, cwd, model?, sandbox?) -> job_id` — background. Use for
-  anything that might exceed ~4 min or is open-ended.
-- `codex_status(job_id)` — poll a background job. `codex_result(job_id)` — fetch
-  final output. `codex_cancel(job_id)` — stop a job.
-- `codex_review(cwd, focus?, timeout_seconds?, background?)` — read-only review.
+- `codex_start(prompt, cwd, model?, sandbox?, max_idle_seconds?) -> job_id` —
+  background. Use for anything that might exceed ~4 min or is open-ended.
+  `max_idle_seconds` (v1.6.0) is the stall guard: the broker kills the job if
+  its output log stops growing for that long. Pass it on every long run
+  (1200 is the standing value); the alternative is a job that sits for hours.
+- `codex_status(job_id)` — poll a background job. Reports runtime, `last
+  output: Ns ago`, and a `WARNING: no output` line once the job has been
+  quiet past the stall threshold (default 600s). `codex_result(job_id)` —
+  fetch final output. `codex_cancel(job_id)` — stop a job.
+- `codex_review(cwd, focus?, timeout_seconds?, background?, max_idle_seconds?)`
+  — read-only review; `max_idle_seconds` applies to the background form.
 - `codex_resume(thread_id, prompt, cwd, timeout_seconds?)` — continue an
   existing Codex thread with a delta instruction.
 - `git_push(cwd, branch, remote?)`, `git_pull(cwd, remote?, branch?)`,
@@ -145,7 +192,10 @@ delegate. Scope it further or do it yourself.
   running: find it via the jobs dir or codex_status; never re-fire.
 - `codex_start` (background): THE DEFAULT for real work. Poll with
   `codex_status`; fetch with `codex_result`. Never block the session on a long
-  sync call.
+  sync call. Pass `max_idle_seconds: 1200` on anything expected to run more
+  than a few minutes, and poll at least every 10–15 minutes: a `WARNING: no
+  output` line means investigate now (is the machine awake and online?), not
+  wait longer.
 
 **Every delegation prompt must include, without exception:**
 1. **Acceptance criteria** — what "done" is, in verifiable terms.
@@ -213,6 +263,21 @@ Summary of the loop:
   writable), commits there, sets `origin` to the GitHub URL; you push from
   the clone path via `git_push(<temp-clone-path>, branch)`. Details in
   `references/git-protocol.md`.
+- **Connection storms and stalls (v1.6.0, LESSONS #9).** Bursts of `No such
+  host is known (os error 11001)`, `Reconnecting... n/5`, or `Falling back
+  from WebSockets to HTTPS` in a job log almost always mean the machine slept
+  or the link dropped — not DNS, not the Codex transport. Before calling it an
+  infrastructure failure: (1) read the job's `output.log` — CLI jobs live under
+  the `CODEX_BROKER_HOME` the registration set (on this user's machine
+  `~/.codex-broker-cli/jobs/`), not necessarily `~/.codex-broker/jobs/`; every
+  job has one, failed or not; (2) run `node scripts/job-forensics.mjs
+  <job_id>` from the broker repo — on Windows it correlates the error minutes
+  with `Kernel-Power` 506/507 (Modern Standby enter/exit) and `WLAN-AutoConfig`
+  8001/8003 and prints a verdict; (3) ask whether the laptop was on AC with
+  the lid open. The broker passes `features.prevent_idle_sleep=true`
+  on every spawn and the setup script writes it into config.toml, but lid
+  close and battery policies still sleep the machine. Re-delegate only after
+  the cause is known; a stalled job is `codex_cancel`ed, never left running.
 - **Partial work on disk.** Inspect the branch: `git status` and
   `git diff main...codex/<slug>`. Decide from what actually landed, not from the
   truncated tool output. Resume the thread with `codex_resume` to finish, or take

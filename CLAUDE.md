@@ -40,7 +40,18 @@ failure rather than improvising around it.
    - Windows (PowerShell): `Copy-Item -Recurse skill "$env:USERPROFILE\.claude\skills\codex-delegation"`
    If a copy already exists, replace it — the skill and broker version together.
 
-5. **Verify.**
+5. **Configure the Codex CLI.** From the repo root:
+   `node scripts/configure-codex.mjs --model gpt-5.6-sol --effort ultra`
+   Idempotent; backs up `~/.codex/config.toml` before any write and preserves
+   every other line. It ensures `features.prevent_idle_sleep = true` (a
+   sleeping laptop looks like a DNS outage from inside Codex — docs/LESSONS.md
+   #9) and sets the model and reasoning-effort defaults. When a new OpenAI
+   model ships, re-run with the new `--model`; nothing else needs to change.
+   Add `--https-only` to route the ChatGPT backend over HTTPS instead of
+   WebSockets (skips the reconnect storm; ChatGPT-login auth only). `--verify`
+   reports the current state without writing.
+
+6. **Verify.**
    - `node server/test/run-tests.mjs` (from `server/`) → expect `0 failed`. The
      suite uses a mock codex on PATH; no network or OpenAI account needed.
    - Restart the Claude Code session so MCP servers reload. Tools appear as
@@ -76,7 +87,27 @@ failure rather than improvising around it.
   capped at ~60s (hence the sub-45s rule for sync `codex_task`).
   In Claude Code the MCP timeout is configurable and typically higher, but
   keep background as the default for real work anyway — job state persists on
-  disk (`~/.codex-broker/jobs/`) and survives caller timeouts.
+  disk and survives caller timeouts.
+- **Job logs live under the broker home the registration chose.** Default
+  `~/.codex-broker/jobs/<job_id>/`, but a `claude mcp add ... --env
+  CODEX_BROKER_HOME=<path>` registration puts them under that path instead
+  (this machine's user-scoped CLI registration uses `~/.codex-broker-cli`).
+  Every job directory is created at spawn time with `prompt.txt`,
+  `output.log`, and `meta.json`; a failed job always leaves its log. Read it
+  before diagnosing anything.
+- **Stall signal and keep-awake (v1.6.0).** `codex_status` reports seconds
+  since the job's output last grew and warns past the stall threshold
+  (`CODEX_BROKER_STALL_WARN_SECONDS`, default 600). Pass `max_idle_seconds`
+  to `codex_start` / background `codex_review` to have the broker kill a job
+  that goes silent (1200 is a sane value for long runs). Every codex spawn
+  carries `-c features.prevent_idle_sleep=true` (opt out with
+  `CODEX_BROKER_KEEP_AWAKE=0`); `CODEX_BROKER_TRANSPORT=https` opts in to an
+  HTTPS-only ChatGPT provider. Bursts of `No such host is known (os error
+  11001)` in a job log mean the machine slept or the link dropped, not DNS
+  (docs/LESSONS.md #9). `node scripts/job-forensics.mjs <job_id>` finds the
+  job across broker homes, buckets the errors, pulls the host's sleep and
+  Wi-Fi events, and prints a correlation verdict; run it before proposing any
+  system change, and paste its output into any escalation.
 - **Tests are the merge gate.** `node server/test/run-tests.mjs` must report
   `0 failed`. Do not restate the total in docs — it has drifted twice, once
   advertising a count that had never actually passed. The suite prints its own
@@ -92,6 +123,6 @@ failure rather than improvising around it.
   Windows, so `--verify` assumes a `core.autocrlf=true` checkout. On a checkout
   with LF endings it reports every file as differing; that is the line endings,
   not a corrupt archive.
-- **docs/LESSONS.md is the debugging map.** Eight field-verified failure modes
+- **docs/LESSONS.md is the debugging map.** Nine field-verified failure modes
   with symptoms and fixes. Check it before diagnosing anything Windows- or
   Desktop-host-related.

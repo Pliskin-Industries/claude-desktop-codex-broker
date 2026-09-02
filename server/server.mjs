@@ -22,6 +22,7 @@ import {
   resolveModel,
   truncate,
   validateCwd,
+  validateIdleSeconds,
   validateSandbox,
 } from "./lib/util.mjs";
 import { buildResumeArgs, buildReviewArgs, buildTaskArgs } from "./lib/codex.mjs";
@@ -105,7 +106,7 @@ function renderSyncOutcome(kind, job, { timedOut, timeoutSeconds }) {
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "codex-broker", version: "1.5.1" },
+  { name: "codex-broker", version: "1.6.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -146,6 +147,11 @@ const TOOLS = [
         model: { type: "string" },
         sandbox: { type: "string", enum: ALLOWED_SANDBOXES, description: `default ${DEFAULT_SANDBOX}` },
         network: { type: "boolean", description: "Allow outbound network for this run. Default false." },
+        max_idle_seconds: {
+          type: "number",
+          description:
+            "Stall guard: kill the job if its output log stops growing for this many seconds (e.g. 1200). Default 0 = never kill; codex_status still reports idle time and warns past the stall threshold.",
+        },
       },
       required: ["prompt", "cwd"],
     },
@@ -153,7 +159,7 @@ const TOOLS = [
   {
     name: "codex_status",
     description:
-      "Get the status of a background job: running | completed | failed, runtime so far, and the last ~20 lines of output.",
+      "Get the status of a background job: running | completed | failed, runtime so far, seconds since its output last grew (with a STALL warning past the threshold), and the last ~20 lines of output.",
     inputSchema: {
       type: "object",
       properties: { job_id: { type: "string" } },
@@ -189,6 +195,10 @@ const TOOLS = [
         cwd: { type: "string", description: "Absolute path to the git repository to review." },
         focus: { type: "string", description: "Optional review focus/guidance appended as the review instruction." },
         timeout_seconds: { type: "number", description: "Max seconds to wait when not backgrounded (default 600)." },
+        max_idle_seconds: {
+          type: "number",
+          description: "Background only. Stall guard: kill the job if its output log stops growing for this many seconds. Default 0 = never.",
+        },
         background: { type: "boolean", description: "If true, behaves like codex_start and returns a job_id." },
         model: { type: "string" },
       },
@@ -410,6 +420,7 @@ async function handleStart(args) {
   const sandbox = validateSandbox(args.sandbox);
   const network = args.network === true;
   const model = resolveModel(args.model);
+  const maxIdleSeconds = validateIdleSeconds(args.max_idle_seconds);
 
   const jobId = startJob({
     jobClass: "task",
@@ -418,15 +429,23 @@ async function handleStart(args) {
     promptText: prompt,
     model,
     sandbox,
+    maxIdleSeconds,
     extra: { bin: resolveCodexBinary() },
   });
   return textResult(
     [
       `Started background job.`,
       `job_id: ${jobId}`,
+      stallGuardLine(maxIdleSeconds),
       `Poll with codex_status({job_id:"${jobId}"}) and fetch with codex_result({job_id:"${jobId}"}).`,
     ].join("\n")
   );
+}
+
+function stallGuardLine(maxIdleSeconds) {
+  return maxIdleSeconds
+    ? `Stall guard: killed if no output for ${maxIdleSeconds}s.`
+    : `Stall guard: off (codex_status still reports idle time; pass max_idle_seconds to enable).`;
 }
 
 function handleStatus(args) {
@@ -439,11 +458,18 @@ function handleStatus(args) {
     `class: ${job.meta.jobClass}`,
     `status: ${job.status}${job.reason ? ` (${job.reason})` : ""}`,
     `runtime: ${job.runtimeSeconds}s`,
+    `last output: ${job.idleSeconds}s ago (${job.lastOutputAt})`,
     sessionLine(job.sessionId),
-    ``,
-    `Last output lines:`,
-    lastLines(job.logText, 20) || "(no output yet)",
   ];
+  if (job.stallWarning) {
+    lines.push(
+      ``,
+      `WARNING: no output for ${job.idleSeconds}s (stall threshold ${job.stallWarnSeconds}s). ` +
+        `The job may be stalled: check that the machine is awake and online (docs/LESSONS.md #9). ` +
+        `codex_cancel it if it does not recover; start with max_idle_seconds to have the broker do this automatically.`
+    );
+  }
+  lines.push(``, `Last output lines:`, lastLines(job.logText, 20) || "(no output yet)");
   return textResult(lines.join("\n"), false);
 }
 
@@ -490,6 +516,7 @@ async function handleReview(args) {
   const builder = (lastMessageFile) => buildReviewArgs({ model, hasFocus: !!focus, lastMessageFile });
 
   if (background) {
+    const maxIdleSeconds = validateIdleSeconds(args.max_idle_seconds);
     const jobId = startJob({
       jobClass: "review",
       builder,
@@ -497,12 +524,14 @@ async function handleReview(args) {
       promptText: focus ?? "",
       model,
       sandbox: "read-only",
+      maxIdleSeconds,
       extra: { bin: resolveCodexBinary() },
     });
     return textResult(
       [
         `Started background review job.`,
         `job_id: ${jobId}`,
+        stallGuardLine(maxIdleSeconds),
         `Poll with codex_status and fetch with codex_result.`,
       ].join("\n")
     );

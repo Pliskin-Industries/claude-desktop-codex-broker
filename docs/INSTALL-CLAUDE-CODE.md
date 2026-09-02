@@ -90,10 +90,14 @@ name.
 
 Running both hosts side by side is fine; they are independent server processes.
 They do *not* reliably share job state, though: job directories live under
-`~/.codex-broker/jobs/`, and the Microsoft Store build of Claude Desktop runs
-under MSIX virtualization, which can redirect that home path. Poll a job from
-the host that started it, or set `CODEX_BROKER_JOBS_DIR` to the same explicit
-absolute path in both.
+`<CODEX_BROKER_HOME>/jobs/` (default `~/.codex-broker`), and a registration
+that sets `--env CODEX_BROKER_HOME=<path>` — a common way to keep CLI jobs
+apart from Desktop-extension jobs — puts them under that path instead. The
+Microsoft Store build of Claude Desktop also runs under MSIX virtualization,
+which can redirect the default home. Poll a job from the host that started it,
+or set `CODEX_BROKER_JOBS_DIR` to the same explicit absolute path in both. When
+you go looking for a failed job's `output.log`, check which home the
+registration in `~/.claude.json` actually uses.
 
 ## Notes
 

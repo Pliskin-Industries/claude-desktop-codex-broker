@@ -13,13 +13,18 @@ import {
   locateWindowsCodexExe,
   windowsModuleDirs,
 } from "../lib/util.mjs";
-import { buildTaskArgs } from "../lib/codex.mjs";
+import { buildResumeArgs, buildReviewArgs, buildTaskArgs } from "../lib/codex.mjs";
+import { applyChanges, report as configReport } from "../../scripts/configure-codex.mjs";
+import { correlate, errorBuckets, findJob, report as forensicsReport } from "../../scripts/job-forensics.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(HERE, "..", "server.mjs");
 const MOCK = path.join(HERE, "mock-codex.mjs");
 const TEST_EXIT_GRACE_MS = 50;
 process.env.CODEX_BROKER_EXIT_GRACE_MS = String(TEST_EXIT_GRACE_MS);
+// Stall detection knobs, shrunk so the tests run in seconds (defaults: 600s / 30s).
+process.env.CODEX_BROKER_STALL_WARN_SECONDS = "2";
+process.env.CODEX_BROKER_STALL_SWEEP_MS = "500";
 
 // --- Test environment setup ------------------------------------------------
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-broker-test-"));
@@ -528,6 +533,150 @@ async function main() {
     assert(!b.includes("sandbox_workspace_write.network_access=true"), "flag wrongly added under read-only");
     const c = buildTaskArgs({ sandbox: "workspace-write", model: null, lastMessageFile: "x" });
     assert(!c.includes("sandbox_workspace_write.network_access=true"), "flag wrongly added by default");
+  });
+
+  // ---- v1.6.0: keep-awake / HTTPS-only overrides, stall signal, config script
+
+  await test("every codex spawn carries the keep-awake override; CODEX_BROKER_KEEP_AWAKE=0 opts out", async () => {
+    const on = { CODEX_BROKER_KEEP_AWAKE: "1" };
+    const off = { CODEX_BROKER_KEEP_AWAKE: "0" };
+    const has = (a) => a.some((x, i) => x === "-c" && a[i + 1] === "features.prevent_idle_sleep=true");
+    assert(has(buildTaskArgs({ sandbox: "workspace-write", model: null, lastMessageFile: "x", env: on })), "task lacks keep-awake");
+    assert(has(buildReviewArgs({ model: null, hasFocus: false, lastMessageFile: "x", env: on })), "review lacks keep-awake");
+    assert(has(buildResumeArgs({ sessionId: "s", model: null, lastMessageFile: "x", env: on })), "resume lacks keep-awake");
+    assert(!has(buildTaskArgs({ sandbox: "workspace-write", model: null, lastMessageFile: "x", env: off })), "opt-out ignored");
+    // Overrides sit before the model flag and the stdin sentinel stays last.
+    const a = buildTaskArgs({ sandbox: "read-only", model: "m1", lastMessageFile: "x", env: on });
+    assert(a.indexOf("-m") > a.indexOf("features.prevent_idle_sleep=true") && a[a.length - 1] === "-", `bad order: ${a.join(" ")}`);
+  });
+
+  await test("CODEX_BROKER_TRANSPORT=https adds an HTTPS-only ChatGPT provider; default does not", async () => {
+    const a = buildTaskArgs({ sandbox: "read-only", model: null, lastMessageFile: "x", env: { CODEX_BROKER_TRANSPORT: "https" } });
+    const vals = a.filter((_, i) => a[i - 1] === "-c");
+    assert(vals.includes('model_provider="codex_broker_https"'), `no provider switch: ${a.join(" ")}`);
+    assert(vals.includes("model_providers.codex_broker_https.supports_websockets=false"), "websockets not disabled");
+    assert(vals.includes("model_providers.codex_broker_https.requires_openai_auth=true"), "chatgpt auth not kept");
+    assert(!a.some((x) => /danger/.test(x)), "danger flag leaked");
+    const b = buildTaskArgs({ sandbox: "read-only", model: null, lastMessageFile: "x", env: {} });
+    assert(!b.some((x) => /model_provider/.test(x)), "provider override added by default");
+  });
+
+  await test("codex_status reports idle time and warns once output goes quiet", async () => {
+    const s = await client.call("codex_start", { prompt: "SLEEP=6 quiet job", cwd: workDir });
+    const jobId = extractJobId(s.text);
+    assert(jobId, `no job_id: ${s.text}`);
+    assert(/Stall guard: off/.test(s.text), `no stall-guard line: ${s.text}`);
+    await sleep(300);
+    const early = await client.call("codex_status", { job_id: jobId });
+    assert(/last output: \d+s ago \(\d{4}-/.test(early.text), `no idle line: ${early.text}`);
+    assert(!/WARNING: no output/.test(early.text), `warned too early: ${early.text}`);
+    await sleep(3500); // mock emits at start, then nothing until it finishes at 6s
+    const later = await client.call("codex_status", { job_id: jobId });
+    assert(/status: running/.test(later.text), `expected running: ${later.text}`);
+    assert(/WARNING: no output for [3-9]s \(stall threshold 2s\)/.test(later.text), `no stall warning: ${later.text}`);
+    // Let it finish so later "no runner artifacts" scans see a clean job.
+    for (let i = 0; i < 20 && !/status: completed/.test((await client.call("codex_status", { job_id: jobId })).text); i++) await sleep(500);
+  });
+
+  await test("max_idle_seconds kills a silent job from the sweeper, with no polling", async () => {
+    const s = await client.call("codex_start", { prompt: "SLEEP=40 silent job", cwd: workDir, max_idle_seconds: 5 });
+    assert(!s.isError, `start failed: ${s.text}`);
+    const jobId = extractJobId(s.text);
+    assert(/Stall guard: killed if no output for 5s/.test(s.text), `no stall-guard line: ${s.text}`);
+    await sleep(8000); // > 5s idle + a sweep tick; NO codex_status calls in between
+    const r = await client.call("codex_result", { job_id: jobId });
+    assert(r.isError && /status: failed \(stalled: no output for \d+s \(max_idle_seconds=5\)\)/.test(r.text), `not stalled: ${r.text}`);
+    assert(/exit: stalled/.test(r.text), `exit marker missing: ${r.text}`);
+    const log = fs.readFileSync(path.join(brokerHome, "jobs", jobId, "output.log"), "utf8");
+    assert(/\[broker\] killed after \d+s without output \(max_idle_seconds=5\)/.test(log), `no kill line in log: ${log}`);
+    const meta = JSON.parse(fs.readFileSync(path.join(brokerHome, "jobs", jobId, "meta.json"), "utf8"));
+    assert(meta.stalled === true && meta.maxIdleSeconds === 5, `meta not marked: ${JSON.stringify(meta)}`);
+  });
+
+  await test("a job that keeps producing output is not stalled; max_idle_seconds is validated", async () => {
+    // SLEEP=3 finishes before 5s idle could elapse — must complete normally.
+    const s = await client.call("codex_start", { prompt: "SLEEP=3 short job", cwd: workDir, max_idle_seconds: 5 });
+    const jobId = extractJobId(s.text);
+    let fin = null;
+    for (let i = 0; i < 30; i++) {
+      await sleep(500);
+      const p = await client.call("codex_status", { job_id: jobId });
+      if (/status: (completed|failed)/.test(p.text)) {
+        fin = p.text;
+        break;
+      }
+    }
+    assert(fin && /status: completed/.test(fin), `expected completed: ${fin}`);
+    const bad = await client.call("codex_start", { prompt: "x", cwd: workDir, max_idle_seconds: 1 });
+    assert(bad.isError && /max_idle_seconds/.test(bad.text), `bad value accepted: ${bad.text}`);
+    const rv = await client.call("codex_review", { cwd: workDir, background: true, max_idle_seconds: 1 });
+    assert(rv.isError && /max_idle_seconds/.test(rv.text), `review accepted bad value: ${rv.text}`);
+  });
+
+  await test("configure-codex applies keep-awake, https-only, model and effort idempotently", async () => {
+    const seed = ['model = "gpt-old"', 'model_reasoning_effort = "high"', "", "[features]", "js_repl = false", "", "[desktop]", "x = 1", ""].join("\n");
+    const one = applyChanges(seed, { httpsOnly: true, model: "gpt-new", effort: "ultra", verify: false });
+    assert(one.changes.length === 5, `expected 5 changes, got ${JSON.stringify(one.changes)}`);
+    const r = configReport(one.text);
+    assert(r.keepAwake && r.httpsBlock, `report wrong: ${JSON.stringify(r)}`);
+    assert(/^model = "gpt-new"$/m.test(one.text) && !/gpt-old/.test(one.text), "model not replaced");
+    assert(/^model_reasoning_effort = "ultra"$/m.test(one.text), "effort not replaced");
+    assert(/^\[features\]\nprevent_idle_sleep = true\njs_repl = false$/m.test(one.text), `features block wrong:\n${one.text}`);
+    assert(/^\[desktop\]\nx = 1$/m.test(one.text), "unrelated table disturbed");
+    assert((one.text.match(/\[model_providers\.chatgpt_http\]/g) || []).length === 1, "provider block count");
+    const two = applyChanges(one.text, { httpsOnly: true, model: "gpt-new", effort: "ultra", verify: false });
+    assert(two.changes.length === 0 && two.text === one.text, `second run not a no-op: ${JSON.stringify(two.changes)}`);
+    const off = applyChanges(one.text, { httpsOnly: false, model: null, effort: null, verify: false });
+    assert(!/^model_provider =/m.test(off.text) && /\[model_providers\.chatgpt_http\]/.test(off.text), "no-https-only wrong");
+    const empty = applyChanges("", { httpsOnly: null, model: null, effort: null, verify: false });
+    assert(/^\[features\]\nprevent_idle_sleep = true\n$/m.test(empty.text.replace(/^\n+/, "")), `empty file wrong:\n${JSON.stringify(empty.text)}`);
+  });
+
+  await test("job-forensics buckets errors, correlates host events, and finds jobs across homes", async () => {
+    const log = [
+      "[broker] direct spawn (mode=background) at 2026-08-31T12:25:11.190Z",
+      "2026-08-31T12:25:43.703104Z  INFO codex_core: session start",
+      '{"type":"item.started","item":{"type":"todo_list"}}',
+      "2026-08-31T12:45:04.930244Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: No such host is known. (os error 11001)",
+      '{"type":"error","message":"Reconnecting... 2/5 (stream disconnected before completion: No such host is known. (os error 11001))"}',
+      "2026-08-31T13:09:18.797384Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: No such host is known. (os error 11001)",
+      '{"type":"item.completed","item":{"type":"error","message":"Falling back from WebSockets to HTTPS transport."}}',
+      "2026-08-31T13:40:41.101915Z ERROR codex_models_manager::manager: failed to refresh available models",
+      '{"type":"turn.failed","error":{"message":"stream disconnected before completion"}}',
+    ].join("\n");
+    const b = errorBuckets(log);
+    assert(b.map((x) => `${x.minute}:${x.count}`).join(" ") === "2026-08-31T12:45:2 2026-08-31T13:09:2 2026-08-31T13:40:2", `buckets: ${JSON.stringify(b)}`);
+    const ev = [
+      { ms: Date.parse("2026-08-31T12:45:05Z"), id: 507, src: "power", msg: "exiting Modern Standby" },
+      { ms: Date.parse("2026-08-31T13:09:12Z"), id: 507, src: "power", msg: "exiting Modern Standby" },
+      { ms: Date.parse("2026-08-31T13:40:39Z"), id: 506, src: "power", msg: "entering Modern Standby" },
+    ];
+    const c = correlate(b, ev, 120);
+    assert(c.explained === 3 && /^HOST: 3\/3/.test(c.verdict), `verdict: ${c.verdict}`);
+    const far = correlate(b, [{ ms: Date.parse("2026-08-31T10:00:00Z"), id: 507, src: "power", msg: "x" }], 120);
+    assert(far.explained === 0 && /^UNEXPLAINED/.test(far.verdict), `far verdict: ${far.verdict}`);
+    assert(/not possible/.test(correlate(b, [], 120).verdict), "empty-events verdict");
+
+    // findJob searches every broker home given, by full id or unique suffix.
+    const homeA = path.join(tmpRoot, "homeA");
+    const homeB = path.join(tmpRoot, "homeB");
+    const mk = (home, id, text) => {
+      const d = path.join(home, "jobs", id);
+      fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(d, "meta.json"), JSON.stringify({ job_id: id, jobClass: "task", mode: "background", cwd: "C:/x", createdAt: "2026-08-31T12:25:11.190Z", endedAt: "2026-08-31T13:40:53.628Z", startedAt: 1 }));
+      fs.writeFileSync(path.join(d, "output.log"), text);
+      fs.writeFileSync(path.join(d, "exit"), "1");
+      return d;
+    };
+    const jobDir = mk(homeB, "20260831122511-e1a011ec", log);
+    mk(homeA, "20260831121448-ab303797", "nothing here");
+    const env = { CODEX_BROKER_HOME: "", CODEX_BROKER_JOBS_DIR: "" };
+    assert(findJob({ id: "e1a011ec", latest: false, homes: [homeA, homeB] }, env) === jobDir, "suffix lookup across homes failed");
+    assert(findJob({ id: "20260831122511-e1a011ec", latest: false, homes: [homeB] }, env) === jobDir, "full id lookup failed");
+    assert(findJob({ id: "nope", latest: false, homes: [homeA, homeB] }, env) === null, "missing job should be null");
+    const rep = forensicsReport(jobDir, { events: false, windowSeconds: 120 });
+    assert(/window:\s+2026-08-31T12:25:11\.190Z → 2026-08-31T13:40:53\.628Z\s+\(76 min\)/.test(rep), `no window line:\n${rep}`);
+    assert(/2026-08-31T12:45Z\s+x\s+2/.test(rep) && /VERDICT:/.test(rep) && /## Last 10 log lines/.test(rep), `report shape:\n${rep}`);
   });
 
   // ---- v1.5.0: git_commit / git_clone / gh_read / gh_pr_create / gh_issue_create

@@ -43,6 +43,81 @@ const EXIT_GRACE_MS =
     : DEFAULT_EXIT_GRACE_MS;
 const firstSeenDeadWithoutExit = new Map();
 
+// ---- Stall detection ---------------------------------------------------------
+// "Idle" = seconds since a job's output.log last grew. Every readJob reports it;
+// codex_status warns past STALL_WARN_SECONDS; and a background job started with
+// maxIdleSeconds is killed once idle exceeds it (checked on every poll AND by an
+// unref'd sweeper for jobs this process started, so a job nobody polls still
+// dies). Field origin: docs/LESSONS.md #9 — a job that sat for hours with no
+// output while the laptop slept. Note the sweeper's timer is itself suspended
+// while the machine sleeps; it fires on wake, which is the earliest anything
+// could act anyway.
+function envInt(name, def) {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : def;
+}
+export const STALL_WARN_SECONDS = envInt("CODEX_BROKER_STALL_WARN_SECONDS", 600);
+const STALL_SWEEP_MS = envInt("CODEX_BROKER_STALL_SWEEP_MS", 30000);
+const lastGrowth = new Map(); // jobId -> { size, at }  (output.log growth seen by THIS process)
+const watchedJobs = new Set(); // background jobs with maxIdleSeconds started by this process
+let sweeper = null;
+
+// Returns when output.log last grew, as best this process can tell. The first
+// observation trusts the file's mtime (covers jobs started before a broker
+// restart); afterwards, growth we observed ourselves wins.
+function outputActivity(jobId, meta) {
+  let size = 0;
+  let mtimeMs = 0;
+  try {
+    const st = fs.statSync(meta.outputLog);
+    size = st.size;
+    mtimeMs = st.mtimeMs;
+  } catch {
+    /* no log yet */
+  }
+  const prev = lastGrowth.get(jobId);
+  if (!prev) lastGrowth.set(jobId, { size, at: mtimeMs || Date.now() });
+  else if (prev.size !== size) lastGrowth.set(jobId, { size, at: Date.now() });
+  const at = lastGrowth.get(jobId).at;
+  return { lastOutputAtMs: Math.max(meta.startedAt || 0, at), observedBefore: !!prev };
+}
+
+function stallJob(jobId, meta, idleSeconds) {
+  killTree(meta.pid);
+  const metaFile = jobPath(jobId, "meta.json");
+  const fresh = readJsonSafe(metaFile) || meta;
+  fresh.stalled = true;
+  fresh.stalledAfterSeconds = idleSeconds;
+  fresh.endedAt = new Date().toISOString();
+  writeMeta(metaFile, fresh);
+  writeExitIfAbsent(jobPath(jobId, "exit"), "stalled");
+  appendLog(
+    fresh.outputLog,
+    `[broker] killed after ${idleSeconds}s without output (max_idle_seconds=${fresh.maxIdleSeconds}) at ${fresh.endedAt}`
+  );
+  watchedJobs.delete(jobId);
+}
+
+function ensureSweeper() {
+  if (sweeper) return;
+  sweeper = setInterval(() => {
+    for (const id of [...watchedJobs]) {
+      let job = null;
+      try {
+        job = readJob(id); // readJob enforces maxIdleSeconds
+      } catch {
+        /* ignore */
+      }
+      if (!job || job.status !== "running") watchedJobs.delete(id);
+    }
+    if (watchedJobs.size === 0) {
+      clearInterval(sweeper);
+      sweeper = null;
+    }
+  }, STALL_SWEEP_MS);
+  sweeper.unref(); // never hold the broker open
+}
+
 function generateJobId() {
   const ts = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
   const rand = crypto.randomBytes(4).toString("hex");
@@ -118,7 +193,7 @@ export function killTree(pid) {
 // Create the on-disk job directory and artifacts common to both modes. Returns
 // the resolved paths, argv, and a base meta object (pid/mode filled in by the
 // caller).
-function createJobArtifacts({ jobClass, builder, cwd, promptText, model, sandbox, bin }) {
+function createJobArtifacts({ jobClass, builder, cwd, promptText, model, sandbox, bin, maxIdleSeconds }) {
   const jobId = generateJobId();
   const dir = jobPath(jobId);
   fs.mkdirSync(dir, { recursive: true });
@@ -152,6 +227,8 @@ function createJobArtifacts({ jobClass, builder, cwd, promptText, model, sandbox
     startedAt: Date.now(),
     canceled: false,
     timedOut: false,
+    stalled: false,
+    maxIdleSeconds: maxIdleSeconds ?? null, // background stall guard; null = off
   };
 
   return { jobId, dir, promptFile, lastMessageFile, outputLog, exitFile, metaFile, argv, meta };
@@ -269,9 +346,9 @@ export function runSyncJob({ jobClass, builder, cwd, promptText, model, sandbox,
 // exit file is ever written → codex_status reports "process exited without
 // recording status" once the pid is gone). Completed-job results still persist
 // on disk and remain readable via codex_status / codex_result.
-export function startJob({ jobClass, builder, cwd, promptText, model, sandbox, extra = {} }) {
+export function startJob({ jobClass, builder, cwd, promptText, model, sandbox, maxIdleSeconds = null, extra = {} }) {
   const bin = extra.bin;
-  const a = createJobArtifacts({ jobClass, builder, cwd, promptText, model, sandbox, bin });
+  const a = createJobArtifacts({ jobClass, builder, cwd, promptText, model, sandbox, bin, maxIdleSeconds });
   a.meta.mode = "background";
   writeMeta(a.metaFile, a.meta);
 
@@ -337,6 +414,12 @@ export function startJob({ jobClass, builder, cwd, promptText, model, sandbox, e
 
   a.meta.pid = child.pid; // the codex process itself (process-group leader)
   writeMeta(a.metaFile, a.meta);
+
+  if (maxIdleSeconds) {
+    outputActivity(a.jobId, a.meta); // seed the growth record so the sweeper can enforce
+    watchedJobs.add(a.jobId);
+    ensureSweeper();
+  }
   return a.jobId;
 }
 
@@ -376,6 +459,7 @@ export function readJob(jobId) {
 
   const alive = pidAlive(meta.pid);
   if (hasExit || alive) firstSeenDeadWithoutExit.delete(jobId);
+  const { lastOutputAtMs, observedBefore } = outputActivity(jobId, meta);
 
   let status;
   let reason = null;
@@ -385,6 +469,9 @@ export function readJob(jobId) {
   } else if (meta.timedOut) {
     status = "failed";
     reason = "timeout";
+  } else if (meta.stalled) {
+    status = "failed";
+    reason = `stalled: no output for ${meta.stalledAfterSeconds}s (max_idle_seconds=${meta.maxIdleSeconds})`;
   } else if (hasExit) {
     status = exitRaw === "0" ? "completed" : "failed";
     if (status === "failed") reason = `exit ${exitRaw}`;
@@ -405,7 +492,17 @@ export function readJob(jobId) {
     }
   }
 
-  const runtimeMs = (endedAtMs ?? Date.now()) - meta.startedAt;
+  const nowOrEndMs = endedAtMs ?? Date.now();
+  const runtimeMs = nowOrEndMs - meta.startedAt;
+  const idleSeconds = Math.max(0, Math.round((nowOrEndMs - lastOutputAtMs) / 1000));
+
+  // Stall guard. Only after a second observation in this process, so a broker
+  // restart never kills a job on the strength of a single stat() reading.
+  if (status === "running" && meta.maxIdleSeconds && observedBefore && idleSeconds > meta.maxIdleSeconds) {
+    stallJob(jobId, meta, idleSeconds);
+    return readJob(jobId);
+  }
+  const stallWarning = status === "running" && idleSeconds >= STALL_WARN_SECONDS;
 
   let logText = "";
   try {
@@ -424,6 +521,10 @@ export function readJob(jobId) {
     reason,
     exitCode: exitRaw,
     runtimeSeconds: Math.max(0, Math.round(runtimeMs / 1000)),
+    idleSeconds,
+    lastOutputAt: new Date(lastOutputAtMs).toISOString(),
+    stallWarning,
+    stallWarnSeconds: STALL_WARN_SECONDS,
     logText,
     finalMessage,
     sessionId,
@@ -439,6 +540,7 @@ export function cancelJob(jobId) {
     return { found: true, alreadyEnded: true, status: job.status };
   }
   killTree(job.meta.pid);
+  watchedJobs.delete(jobId);
   const metaFile = jobPath(jobId, "meta.json");
   const meta = readJsonSafe(metaFile) || job.meta;
   meta.canceled = true;

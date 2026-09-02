@@ -20,32 +20,65 @@ function assertSafe(argv) {
   return argv;
 }
 
-// codex exec --json ... -o <lastMessageFile> [-m model] -s <sandbox> -
-export function buildTaskArgs({ sandbox, model, lastMessageFile, network }) {
+// Config overrides the broker adds to EVERY codex spawn (task, resume, review),
+// so no per-machine ~/.codex/config.toml edit is needed for them:
+//
+//   features.prevent_idle_sleep=true — keep the machine awake while a turn is
+//     running. A sleeping laptop looks exactly like a DNS outage from inside
+//     Codex (docs/LESSONS.md #9). Opt out with CODEX_BROKER_KEEP_AWAKE=0.
+//   CODEX_BROKER_TRANSPORT=https — opt in to an HTTPS-only provider for the
+//     ChatGPT backend (supports_websockets=false), which skips the 5-retry
+//     WebSocket storm before Codex's own HTTPS fallback. ChatGPT-login auth
+//     only; API-key users keep the default provider. Off by default because
+//     the win is small and it changes the provider id Codex reports.
+//
+// Values are TOML: booleans bare, strings quoted. Never a danger flag.
+export const HTTPS_PROVIDER_ID = "codex_broker_https";
+
+export function brokerConfigOverrides(env = process.env) {
+  const out = [];
+  if (env.CODEX_BROKER_KEEP_AWAKE !== "0") out.push("-c", "features.prevent_idle_sleep=true");
+  if (env.CODEX_BROKER_TRANSPORT === "https") {
+    const p = `model_providers.${HTTPS_PROVIDER_ID}`;
+    out.push("-c", `model_provider="${HTTPS_PROVIDER_ID}"`);
+    out.push("-c", `${p}.name="ChatGPT HTTPS (codex-broker)"`);
+    out.push("-c", `${p}.base_url="https://chatgpt.com/backend-api/codex"`);
+    out.push("-c", `${p}.wire_api="responses"`);
+    out.push("-c", `${p}.requires_openai_auth=true`);
+    out.push("-c", `${p}.supports_websockets=false`);
+  }
+  return out;
+}
+
+// codex exec --json ... -o <lastMessageFile> [-c overrides] [-m model] -s <sandbox> -
+export function buildTaskArgs({ sandbox, model, lastMessageFile, network, env = process.env }) {
   const argv = ["exec", "--json", "--skip-git-repo-check", "-s", sandbox, "-o", lastMessageFile];
   // Opt-in network for git push/pull etc. Only meaningful with workspace-write;
   // filesystem sandboxing is unchanged. Never combined with danger flags.
   if (network && sandbox === "workspace-write") argv.push("-c", "sandbox_workspace_write.network_access=true");
+  argv.push(...brokerConfigOverrides(env));
   if (model) argv.push("-m", model);
   argv.push("-"); // prompt from stdin
   return assertSafe(argv);
 }
 
-// codex exec resume --json ... -o <file> [-m model] <session_id> -
+// codex exec resume --json ... -o <file> [-c overrides] [-m model] <session_id> -
 // NOTE: resume has no -s/--sandbox flag; it inherits the original session's
 // sandbox. It also has no --cd; cwd is set via the spawn option.
-export function buildResumeArgs({ sessionId, model, lastMessageFile }) {
+export function buildResumeArgs({ sessionId, model, lastMessageFile, env = process.env }) {
   const argv = ["exec", "resume", "--json", "--skip-git-repo-check", "-o", lastMessageFile];
+  argv.push(...brokerConfigOverrides(env));
   if (model) argv.push("-m", model);
   argv.push(sessionId, "-"); // session id positional, then prompt from stdin
   return assertSafe(argv);
 }
 
-// codex exec review --json ... -o <file> [-m model] [-]
+// codex exec review --json ... -o <file> [-c overrides] [-m model] [-]
 // review is inherently read-only (no -s flag). Focus text, when present, is
 // passed as the custom review instruction via stdin ("-").
-export function buildReviewArgs({ model, hasFocus, lastMessageFile }) {
+export function buildReviewArgs({ model, hasFocus, lastMessageFile, env = process.env }) {
   const argv = ["exec", "review", "--json", "--skip-git-repo-check", "-o", lastMessageFile];
+  argv.push(...brokerConfigOverrides(env));
   if (model) argv.push("-m", model);
   if (hasFocus) argv.push("-");
   return assertSafe(argv);

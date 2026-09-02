@@ -39,7 +39,8 @@ The surrounding rules — what qualifies a task for delegation, dirty-tree handl
 The desktop bridge caps a single MCP tool call at ~60 seconds. Verified behavior on timeout: the broker's job keeps running; only the caller's connection drops. Therefore:
 
 - `codex_task` (synchronous) — only for jobs estimated under ~45 seconds.
-- `codex_start` → `codex_status` → `codex_result` — the default for real work. Job state persists on disk (`~/.codex-broker/jobs/`) and survives broker restarts.
+- `codex_start` → `codex_status` → `codex_result` — the default for real work. Job state persists on disk (`<CODEX_BROKER_HOME>/jobs/`, default `~/.codex-broker/jobs/`) and survives broker restarts.
+- Stall signal (v1.6.0): `codex_status` reports seconds since `output.log` last grew and warns past `CODEX_BROKER_STALL_WARN_SECONDS` (600). `max_idle_seconds` on `codex_start` / background `codex_review` makes the broker kill a job that goes silent — enforced on every poll and by an unref'd sweeper for jobs this broker process started, so an unpolled job still dies. Every spawn also carries `-c features.prevent_idle_sleep=true` so the host does not idle-sleep mid-turn (docs/LESSONS.md #9).
 - After a sync timeout, never re-fire: find the still-running job via `codex_status` and wait for it.
 
 ## Hosting constraints (MCPB extension host)
