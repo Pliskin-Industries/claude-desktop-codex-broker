@@ -14,6 +14,7 @@ import {
 import {
   DEFAULT_SANDBOX,
   ALLOWED_SANDBOXES,
+  ALLOWED_EFFORTS,
   ValidationError,
   clampTimeoutSeconds,
   resolveCodexBinary,
@@ -22,6 +23,7 @@ import {
   resolveModel,
   truncate,
   validateCwd,
+  validateEffort,
   validateIdleSeconds,
   validateSandbox,
 } from "./lib/util.mjs";
@@ -133,9 +135,18 @@ function renderSyncOutcome(kind, job, { timedOut, timeoutSeconds }) {
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "codex-broker", version: "1.6.0" },
+  { name: "codex-broker", version: "1.7.0" },
   { capabilities: { tools: {} } }
 );
+
+// Shared schema for the per-call reasoning-effort override (v1.7.0).
+const EFFORT_PARAM = {
+  type: "string",
+  enum: ALLOWED_EFFORTS,
+  description:
+    "Optional reasoning effort for this call only; omit to use the model_reasoning_effort default in ~/.codex/config.toml. " +
+    "`ultra` coordinates four subagents (reviews, multi-finding batches); `max` is the deepest single-agent pass (scoped implementation).",
+};
 
 const TOOLS = [
   {
@@ -148,6 +159,7 @@ const TOOLS = [
         prompt: { type: "string", description: "The task/instructions for Codex." },
         cwd: { type: "string", description: "Absolute path to the working directory (must exist)." },
         model: { type: "string", description: "Optional model override (else CODEX_MODEL env, else codex default)." },
+        reasoning_effort: EFFORT_PARAM,
         network: {
           type: "boolean",
           description: "Allow outbound network for this run (git push/pull, package installs). Default false. Filesystem sandbox unchanged.",
@@ -172,6 +184,7 @@ const TOOLS = [
         prompt: { type: "string" },
         cwd: { type: "string", description: "Absolute path to the working directory (must exist)." },
         model: { type: "string" },
+        reasoning_effort: EFFORT_PARAM,
         sandbox: { type: "string", enum: ALLOWED_SANDBOXES, description: `default ${DEFAULT_SANDBOX}` },
         network: { type: "boolean", description: "Allow outbound network for this run. Default false." },
         max_idle_seconds: {
@@ -228,6 +241,7 @@ const TOOLS = [
         },
         background: { type: "boolean", description: "If true, behaves like codex_start and returns a job_id." },
         model: { type: "string" },
+        reasoning_effort: EFFORT_PARAM,
       },
       required: ["cwd"],
     },
@@ -243,6 +257,7 @@ const TOOLS = [
         prompt: { type: "string" },
         cwd: { type: "string", description: "Absolute path to the working directory (must exist)." },
         model: { type: "string" },
+        reasoning_effort: EFFORT_PARAM,
         timeout_seconds: { type: "number", description: "Max seconds to wait (default 240)." },
       },
       required: ["thread_id", "prompt", "cwd"],
@@ -423,12 +438,13 @@ async function handleTask(args) {
   const sandbox = validateSandbox(args.sandbox);
   const network = args.network === true;
   const model = resolveModel(args.model);
+  const effort = validateEffort(args.reasoning_effort);
   const timeoutSeconds = clampTimeoutSeconds(args.timeout_seconds, DEFAULT_TASK_TIMEOUT);
 
   // DIRECT spawn (no detached runner) — see lib/jobs.mjs.
   const { jobId, done } = runSyncJob({
     jobClass: "task",
-    builder: (lastMessageFile) => buildTaskArgs({ sandbox, model, lastMessageFile, network }),
+    builder: (lastMessageFile) => buildTaskArgs({ sandbox, model, effort, lastMessageFile, network }),
     cwd,
     promptText: prompt,
     model,
@@ -447,11 +463,12 @@ async function handleStart(args) {
   const sandbox = validateSandbox(args.sandbox);
   const network = args.network === true;
   const model = resolveModel(args.model);
+  const effort = validateEffort(args.reasoning_effort);
   const maxIdleSeconds = validateIdleSeconds(args.max_idle_seconds);
 
   const jobId = startJob({
     jobClass: "task",
-    builder: (lastMessageFile) => buildTaskArgs({ sandbox, model, lastMessageFile, network }),
+    builder: (lastMessageFile) => buildTaskArgs({ sandbox, model, effort, lastMessageFile, network }),
     cwd,
     promptText: prompt,
     model,
@@ -539,10 +556,11 @@ function handleCancel(args) {
 async function handleReview(args) {
   const cwd = validateCwd(args.cwd);
   const model = resolveModel(args.model);
+  const effort = validateEffort(args.reasoning_effort);
   const focus = typeof args.focus === "string" && args.focus.trim() !== "" ? args.focus : null;
   const background = args.background === true;
   const timeoutSeconds = clampTimeoutSeconds(args.timeout_seconds, DEFAULT_REVIEW_TIMEOUT);
-  const builder = (lastMessageFile) => buildReviewArgs({ model, hasFocus: !!focus, lastMessageFile });
+  const builder = (lastMessageFile) => buildReviewArgs({ model, effort, hasFocus: !!focus, lastMessageFile });
 
   if (background) {
     const maxIdleSeconds = validateIdleSeconds(args.max_idle_seconds);
@@ -587,12 +605,13 @@ async function handleResume(args) {
   const prompt = requireString(args.prompt, "prompt");
   const cwd = validateCwd(args.cwd);
   const model = resolveModel(args.model);
+  const effort = validateEffort(args.reasoning_effort);
   const timeoutSeconds = clampTimeoutSeconds(args.timeout_seconds, DEFAULT_TASK_TIMEOUT);
 
   // DIRECT spawn (no detached runner) — see lib/jobs.mjs.
   const { jobId, done } = runSyncJob({
     jobClass: "resume",
-    builder: (lastMessageFile) => buildResumeArgs({ sessionId, model, lastMessageFile }),
+    builder: (lastMessageFile) => buildResumeArgs({ sessionId, model, effort, lastMessageFile }),
     cwd,
     promptText: prompt,
     model,

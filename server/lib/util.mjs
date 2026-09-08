@@ -5,6 +5,11 @@ import path from "node:path";
 
 export const ALLOWED_SANDBOXES = ["read-only", "workspace-write"];
 export const DEFAULT_SANDBOX = "workspace-write";
+// Codex reasoning-effort ladder (verified against the Codex model catalog,
+// 2026-09-08): `max` tops the single-agent ladder; `ultra` is the separate
+// four-subagent tier. Omitted => the model_reasoning_effort default in
+// ~/.codex/config.toml wins.
+export const ALLOWED_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 export const MAX_OUTPUT_CHARS = 8000;
 
 // --- Codex binary resolution ----------------------------------------------
@@ -186,6 +191,20 @@ export function resolveModel(param) {
   const env = process.env.CODEX_MODEL;
   if (typeof env === "string" && env.trim() !== "") return env.trim();
   return null;
+}
+
+// reasoning_effort (v1.7.0): omitted/empty => null (config.toml default);
+// otherwise one of ALLOWED_EFFORTS, verbatim.
+export function validateEffort(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const v = typeof value === "string" ? value.trim() : value;
+  if (!ALLOWED_EFFORTS.includes(v)) {
+    throw new ValidationError(
+      `Invalid reasoning_effort "${value}". Allowed values: ${ALLOWED_EFFORTS.join(", ")}. ` +
+        `Omit it to use the model_reasoning_effort default in ~/.codex/config.toml.`
+    );
+  }
+  return v;
 }
 
 // max_idle_seconds for background jobs: omitted/0 => null (no idle kill);

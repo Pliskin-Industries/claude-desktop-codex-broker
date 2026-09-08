@@ -66,6 +66,14 @@ The tools then appear to Claude as `codex_task`, `codex_start`, etc.
 > e.g. `mcp__remote-devices__Codex_Broker__codex_task`. The tool names and
 > parameters are identical — only the namespace differs.
 
+### Per-call reasoning effort (v1.7.0)
+
+`codex_task`, `codex_start`, `codex_review`, and `codex_resume` accept an
+optional `reasoning_effort` (`low`, `medium`, `high`, `xhigh`, `max`, `ultra`).
+The broker passes it as `-c model_reasoning_effort="<value>"` for that spawn
+only; omit it and the `model_reasoning_effort` default in `~/.codex/config.toml`
+applies. Values are validated against the allowlist before anything is spawned.
+
 ### Optional environment variables
 
 | Var | Effect |

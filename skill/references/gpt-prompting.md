@@ -1,8 +1,9 @@
-# Prompting GPT-5.6 Sol via Codex
+# Prompting GPT-6 Astra via Codex
 
 How to write the `prompt` you pass to `codex_task`, `codex_start`, `codex_review`,
 and `codex_resume`. Adapted from OpenAI's own GPT-5.x coding-model prompting
-guidance; the techniques are model-family-generic and apply to GPT-5.6 Sol.
+guidance; the techniques are model-family-generic and apply to GPT-6 Astra and
+to GPT-5.6 Sol when it is used as the relief executor.
 
 ## Core stance
 

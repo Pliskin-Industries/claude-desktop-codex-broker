@@ -561,6 +561,44 @@ async function main() {
     assert(!b.some((x) => /model_provider/.test(x)), "provider override added by default");
   });
 
+  // ---- v1.7.0: per-call reasoning-effort override
+
+  await test("reasoning_effort adds a model_reasoning_effort override on every builder; omitted adds none", async () => {
+    const has = (a, v) => a.some((x, i) => x === "-c" && a[i + 1] === `model_reasoning_effort="${v}"`);
+    assert(has(buildTaskArgs({ sandbox: "workspace-write", model: null, effort: "max", lastMessageFile: "x", env: {} }), "max"), "task lacks effort");
+    assert(has(buildReviewArgs({ model: null, effort: "ultra", hasFocus: false, lastMessageFile: "x", env: {} }), "ultra"), "review lacks effort");
+    assert(has(buildResumeArgs({ sessionId: "s", model: null, effort: "xhigh", lastMessageFile: "x", env: {} }), "xhigh"), "resume lacks effort");
+    const none = buildTaskArgs({ sandbox: "workspace-write", model: null, lastMessageFile: "x", env: {} });
+    assert(!none.some((x) => /model_reasoning_effort/.test(x)), "effort override added by default");
+    // Sits with the other -c overrides: before the model flag, stdin sentinel last.
+    const a = buildTaskArgs({ sandbox: "read-only", model: "m1", effort: "max", lastMessageFile: "x", env: {} });
+    assert(a.indexOf("-m") > a.indexOf('model_reasoning_effort="max"') && a[a.length - 1] === "-", `bad order: ${a.join(" ")}`);
+    // Builder-level backstop: anything but a bare word is refused even if validation were bypassed.
+    let threw = false;
+    try {
+      buildTaskArgs({ sandbox: "read-only", model: null, effort: 'max" -c sandbox="danger-full-access', lastMessageFile: "x", env: {} });
+    } catch {
+      threw = true;
+    }
+    assert(threw, "builder accepted an unsafe effort value");
+  });
+
+  await test("invalid reasoning_effort is rejected before spawning; a valid one reaches codex's argv", async () => {
+    const bad = await client.call("codex_task", { prompt: "x", cwd: workDir, reasoning_effort: "turbo" });
+    assert(bad.isError && /Invalid reasoning_effort/.test(bad.text), `expected rejection, got: ${bad.text}`);
+    const good = await client.call("codex_task", { prompt: "effort check", cwd: workDir, reasoning_effort: "max" });
+    assert(!good.isError && /Status: completed/.test(good.text), `valid effort rejected: ${good.text}`);
+    // Background jobs return their job_id, so inspect the spawned argv there.
+    const readMeta = (text) => JSON.parse(fs.readFileSync(path.join(brokerHome, "jobs", extractJobId(text), "meta.json"), "utf8"));
+    const meta = readMeta(await (await client.call("codex_start", { prompt: "effort check", cwd: workDir, reasoning_effort: "max" })).text);
+    const i = meta.argv.indexOf('model_reasoning_effort="max"');
+    assert(i > 0 && meta.argv[i - 1] === "-c", `override missing from spawned argv: ${meta.argv.join(" ")}`);
+    const metaPlain = readMeta((await client.call("codex_start", { prompt: "no effort", cwd: workDir })).text);
+    assert(!metaPlain.argv.some((x) => /model_reasoning_effort/.test(x)), "override leaked into a call that omitted it");
+    const metaBg = readMeta((await client.call("codex_review", { cwd: workDir, background: true, reasoning_effort: "ultra" })).text);
+    assert(metaBg.argv.includes('model_reasoning_effort="ultra"'), `background review lacks override: ${metaBg.argv.join(" ")}`);
+  });
+
   await test("codex_status reports idle time and warns once output goes quiet", async () => {
     const s = await client.call("codex_start", { prompt: "SLEEP=6 quiet job", cwd: workDir });
     const jobId = extractJobId(s.text);

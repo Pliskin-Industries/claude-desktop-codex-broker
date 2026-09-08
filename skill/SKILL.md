@@ -1,8 +1,9 @@
 ---
 name: codex-delegation
 description: >-
-  Delegate scoped coding work to OpenAI's Codex (currently GPT-5.6 Sol) via the
-  Codex broker tools when they are available in this session. Use for "delegate to codex",
+  Delegate scoped coding work to OpenAI's Codex (currently GPT-6 Astra, with
+  GPT-5.6 Sol as the relief executor) via the Codex broker tools when they are
+  available in this session. Use for "delegate to codex",
   "task codex", "have GPT implement/write this", "get a second opinion on this
   design", "adversarial review", "attack this plan/architecture", "codex status",
   "resume the codex task", or any implementation, test-writing, bugfix, or
@@ -17,8 +18,8 @@ description: >-
 Author: GhengisPliskin
 
 You are Claude, orchestrating from a Cowork session or from Claude Code. Codex
-(currently GPT-5.6 Sol; the model and effort defaults live in
-`~/.codex/config.toml`, never in this skill or in tool calls) is a second model
+(currently GPT-6 Astra; the model and effort defaults live in
+`~/.codex/config.toml`, never hardcoded in this skill) is a second model
 you can hand scoped work to through broker MCP tools. You own planning, quality control, integration, git, and final
 accountability. Codex is a bounded executor and an uncorrelated second pair of
 eyes. It is never the decision-maker.
@@ -26,14 +27,41 @@ eyes. It is never the decision-maker.
 Invoke this skill whenever the broker tools are present and the work is coding,
 code review, or a design critique — even if the user did not say "codex".
 
-## Model hierarchy (standing, ratified 2026-08-06)
+## Model hierarchy (standing, ratified 2026-08-06; amended 2026-09-08)
 
-Three tiers, each pinned to its strongest role:
+| Model | Tier | Role | Effort | When |
+|---|---|---|---|---|
+| Claude Fable 5.1 | Overlord | Normative rulings, contract changes, phase-boundary review, final accountability. Verdict outranks everything. Writes code only with the user's per-task permission (Fable-coding gate below). | n/a | Boundaries and rulings. Never routine execution. |
+| Claude Opus (latest) | Default orchestrator | Runs sessions: scopes tasks, writes delegation prompts, runs the gates, merges. | Max | Every ordinary execution session. Contract questions go to Fable. |
+| GPT-6 Astra (Codex) | Executor and adversarial reviewer | Attacks Fable's plans before build. Implements bounded tasks. Reviews Claude-authored code. | `ultra` for reviews and batches; `max` for scoped implementation, via per-call `reasoning_effort` | Default for every delegation. |
+| GPT-5.6 Sol (Codex) | Relief executor | Bounded mechanical implementation when Astra quota is short. Fallback if Astra access lapses. Lint-grade second pass on Astra diffs. | Max | Per-call `model: "gpt-5.6-sol"` only. Never the global default while Astra is available. Never long-horizon work. |
+| GPT-5.6 Terra, Luna | Unassigned | In the Codex catalog; no role until there is a reason to test them. | n/a | Do not use. |
 
-- **Fable (Claude Fable 5) — supreme overlord.** Reserved for the moments only it
+Why this shape (published results, 2026-09): on Terminal-Bench 4.0 Astra
+(57.7) and Fable 5.1 (55.8) are peers, Opus 5 (52.3) is close behind, and Sol
+(37.3) is a clear tier below on long-horizon agentic work. Defaulting the
+executor to Astra therefore costs nothing against Fable coding directly, and
+Sol is safe only for bounded work.
+
+- **Fable (Claude Fable 5.1) — supreme overlord.** Reserved for the moments only it
   can serve: phase-boundary reviews, contract amendments and freezes, finding
   triage, normative rulings, governance logs, and final accountability. Its review
   verdict outranks every other model's output, including its own delegates'.
+
+  **Fable-coding gate (ratified 2026-09-08).** Fable's context is the scarcest
+  resource in the loop and the user plans it. Fable therefore writes code only
+  with the user's explicit permission, asked in chat before the first edit and
+  granted per task. This binds every session, including ones Fable itself is
+  running: if a task meets the delegation criteria, delegate it; if it does not
+  and the alternative is Fable implementing, stop and ask, stating (1) what
+  would be written, (2) rough size in files and lines, (3) why Codex is
+  unsuitable. An explicit user request that Fable make the change grants it
+  for that task; a session-wide waiver must be stated as such. Not gated: doc,
+  config, and skill edits; one-line fixes; and the review, triage, and
+  integration work Fable already owns. When Astra fails a hard task the order
+  is `codex_resume` with a tighter prompt, then a fresh Astra delegation with
+  narrower scope, then asking the user whether Fable takes it over. Sol is not
+  the fallback for hard tasks.
 - **Claude Opus (latest) on Max effort — DEFAULT orchestrator.** Runs execution
   sessions as the standing default (not merely a fallback), to extend Fable's
   availability: directs Codex tasks, runs the gates, merges. Verified acceptable
@@ -43,21 +71,32 @@ Three tiers, each pinned to its strongest role:
   rule: every Opus-orchestrated phase gets a queued Fable-level review at the next
   boundary, and anything requiring a normative ruling or contract change waits for
   Fable rather than being decided in-line.
-- **Codex (GPT-5.6 Sol, or OpenAI's latest coding model) — executor and
+- **Codex (GPT-6 Astra, or OpenAI's latest coding model) — executor and
   uncorrelated reviewer**, at **ultra** reasoning by default. Effort semantics
-  (verified 2026-08-06): `max` is the TOP of the single-agent effort ladder
-  (deepest solo reasoning); `ultra` is a separate premium tier that coordinates
-  four subagents in parallel — "higher" as a tier, different in kind. Default
-  **ultra** for adversarial reviews and multi-finding batches (parallel
-  perspectives demonstrably catch what single-agent passes miss); drop to **max**
-  for tightly scoped single-file work or if ultra latency hurts; **xhigh** below
-  that. Set via `model_reasoning_effort` in `~/.codex/config.toml` (global —
-  affects every Codex session on the machine; note it in the handoff when changed).
-  When a new OpenAI model ships, change both defaults in one idempotent command
-  from the broker repo: `node scripts/configure-codex.mjs --model <id> --effort
-  ultra` (backs up first). Leave `model` unset in delegation calls so the
-  config.toml default wins; hardcoding a model name anywhere else is how the
-  default drifts.
+  (verified 2026-08-06, re-verified against the Codex catalog 2026-09-08): `max`
+  is the TOP of the single-agent effort ladder (deepest solo reasoning); `ultra`
+  is a separate premium tier that coordinates four subagents in parallel —
+  "higher" as a tier, different in kind. Use **ultra** for adversarial reviews
+  and multi-finding batches (parallel perspectives demonstrably catch what
+  single-agent passes miss); **max** for scoped implementation or if ultra
+  latency hurts; **xhigh** below that. The global default is
+  `model_reasoning_effort` in `~/.codex/config.toml` (affects every Codex
+  session on the machine; note it in the handoff when changed). Since broker
+  v1.7.0 every codex tool takes an optional `reasoning_effort` (low, medium,
+  high, xhigh, max, ultra) that overrides the default for that call only, so
+  choose per call and leave the global file alone. When a new OpenAI model
+  ships, change both defaults in one idempotent command from the broker repo:
+  `node scripts/configure-codex.mjs --model <id> --effort ultra` (backs up
+  first). Leave `model` unset in delegation calls so the config.toml default
+  wins; hardcoding a model name anywhere else is how the default drifts.
+- **GPT-5.6 Sol — relief executor.** Reached only through the per-call `model`
+  parameter. Use it for bounded mechanical work when Astra quota is short, as
+  the fallback if Astra access lapses (roll the global default back with the
+  same configure command), and for a lint-grade second pass on Astra diffs
+  (same lab, so it is not the uncorrelated review). Never hand it long-horizon
+  or architecture-shaped work, and never make it the global default while
+  Astra is available. Report the switch to the user each time; do not swap
+  silently.
 
 Evidence rule for escalations (any tier, ratified 2026-09-01): a claim that
 the pipeline or the network is broken must cite the job's `output.log` path
@@ -120,9 +159,9 @@ Known prefixes:
 
 Same fifteen tools whichever prefix is in play:
 
-- `codex_task(prompt, cwd, model?, sandbox?, timeout_seconds?)` — synchronous.
+- `codex_task(prompt, cwd, model?, reasoning_effort?, sandbox?, timeout_seconds?)` — synchronous.
   Short tasks only (under ~4 min). Blocks until done.
-- `codex_start(prompt, cwd, model?, sandbox?, max_idle_seconds?) -> job_id` —
+- `codex_start(prompt, cwd, model?, reasoning_effort?, sandbox?, max_idle_seconds?) -> job_id` —
   background. Use for anything that might exceed ~4 min or is open-ended.
   `max_idle_seconds` (v1.6.0) is the stall guard: the broker kills the job if
   its output log stops growing for that long. Pass it on every long run
@@ -131,10 +170,16 @@ Same fifteen tools whichever prefix is in play:
   output: Ns ago`, and a `WARNING: no output` line once the job has been
   quiet past the stall threshold (default 600s). `codex_result(job_id)` —
   fetch final output. `codex_cancel(job_id)` — stop a job.
-- `codex_review(cwd, focus?, timeout_seconds?, background?, max_idle_seconds?)`
-  — read-only review; `max_idle_seconds` applies to the background form.
-- `codex_resume(thread_id, prompt, cwd, timeout_seconds?)` — continue an
-  existing Codex thread with a delta instruction.
+- `codex_review(cwd, focus?, timeout_seconds?, background?, max_idle_seconds?,
+  reasoning_effort?)` — read-only review; `max_idle_seconds` applies to the
+  background form.
+- `codex_resume(thread_id, prompt, cwd, model?, reasoning_effort?,
+  timeout_seconds?)` — continue an existing Codex thread with a delta
+  instruction.
+- `reasoning_effort` (v1.7.0) on all four: one of low, medium, high, xhigh,
+  max, ultra, for that call only. Omit it to use the config.toml default
+  (ultra). Standing choice: `ultra` for reviews and multi-finding batches,
+  `max` for scoped implementation.
 - `git_push(cwd, branch, remote?)`, `git_pull(cwd, remote?, branch?)`,
   `git_commit(cwd, message, paths?)`, `git_clone(url, dest, branch?)`,
   `gh_repo_create(cwd, name, visibility?)`, `gh_pr_create(cwd, title, body?,
@@ -168,7 +213,7 @@ This is the core of the skill. Read the decision rule before every delegation.
 - Anything needing conversation context, cross-file architectural judgment, or
   touching secrets/config/credentials.
 
-**Codex (GPT-5.6 Sol) does:**
+**Codex (GPT-6 Astra) does:**
 - Scoped implementation — one module, feature, or bugfix per delegation. Bounded.
 - Test writing against a spec you define.
 - Adversarial design review — attack a plan or architecture before you build it.
@@ -243,8 +288,14 @@ Summary of the loop:
 ## Failure handling
 
 - **Usage-limit / quota errors.** Report the exact error to the user. Offer to
-  wait and retry, or to switch to an API-key-backed run if they have one. Do not
-  silently swap models or keys.
+  wait and retry, to route bounded work to Sol via the per-call `model`
+  parameter, or to switch to an API-key-backed run if they have one. Do not
+  silently swap models or keys, and do not change the global default.
+- **Astra stopped by the safety classifier.** Astra carries a "Critical" cyber
+  classification, so a review or task framed as attack, bypass, or exploit
+  enumeration can be stopped outright, sometimes mid-run on unrelated work.
+  Reframe as a staff-engineer design review (see the prompt-filter gotcha) and
+  re-delegate; a stop is not a quota error and not a network fault.
 - **Timeouts.** If a sync `codex_task` times out, do not re-fire blindly — the
   work may be running or partially applied. For background jobs, check
   `codex_status` before any retry. Re-firing a live job duplicates work and can
@@ -325,7 +376,9 @@ a review — ask which findings, if any, they want addressed before editing.
 2. (Optional) Adversarial design review of the plan before building.
 3. Commit + push container state. Draft the Codex prompt with acceptance
    criteria, scope, do-not-touch, and test mandate.
-4. Delegate (`codex_task` or `codex_start`) with `cwd` and correct sandbox.
+4. Delegate (`codex_task` or `codex_start`) with `cwd`, the correct sandbox,
+   and `reasoning_effort` (`max` for scoped implementation, `ultra` for
+   reviews and batches).
 5. Pull `codex/<slug>`, review the diff, run tests. Triage any findings.
 6. Merge, or `codex_resume` with feedback. Repeat 5–6 until it meets your bar.
 7. Report to the user: what Codex did, what you verified, residual risks.

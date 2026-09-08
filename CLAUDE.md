@@ -15,8 +15,10 @@ failure rather than improvising around it.
 
 1. **Check prerequisites.** All three must pass before anything else:
    - `node --version` → must be >= 18.18.
-   - `codex --version` → Codex CLI present. If missing:
-     `npm install -g @openai/codex`, then the USER must run `codex login`
+   - `codex --version` → Codex CLI present and >= 0.153.1 (the first build
+     with the GPT-6 Astra catalog entry; older CLIs reject the model id). If
+     missing or older: `npm install -g @openai/codex@latest`, then the USER
+     must run `codex login`
      themselves (interactive; uses their ChatGPT plan or API key). Do not
      attempt to log in for them.
    - `git --version` → required. `gh --version` is optional (only needed for
@@ -41,7 +43,7 @@ failure rather than improvising around it.
    If a copy already exists, replace it — the skill and broker version together.
 
 5. **Configure the Codex CLI.** From the repo root:
-   `node scripts/configure-codex.mjs --model gpt-5.6-sol --effort ultra`
+   `node scripts/configure-codex.mjs --model gpt-6-astra --effort ultra`
    Idempotent; backs up `~/.codex/config.toml` before any write and preserves
    every other line. It ensures `features.prevent_idle_sleep = true` (a
    sleeping laptop looks like a DNS outage from inside Codex — docs/LESSONS.md
@@ -107,6 +109,18 @@ failure rather than improvising around it.
   (docs/LESSONS.md #9). The broker appends a forensics verdict to
   `codex_status` / `codex_result` for such jobs automatically; paste that
   block into any escalation before proposing a system change.
+- **Model roles and the Fable-coding gate.** `skill/SKILL.md` carries the
+  standing hierarchy: Fable rules, Opus orchestrates, GPT-6 Astra executes and
+  reviews, GPT-5.6 Sol is the relief executor reached only through the
+  per-call `model` parameter. Fable writes code only with the user's explicit
+  per-task permission, asked before the first edit, so the user can plan Fable
+  context. Doc, config, and one-line edits are not gated.
+- **Per-call effort (v1.7.0).** `codex_task`, `codex_start`, `codex_review`,
+  and `codex_resume` accept `reasoning_effort` (low, medium, high, xhigh,
+  max, ultra), passed to Codex as a `-c model_reasoning_effort` override for
+  that call only. Omit it to use the config.toml default. Standing choice:
+  `ultra` for reviews and multi-finding batches, `max` for scoped
+  implementation. The global default in config.toml stays `ultra`.
 - **Tests are the merge gate.** `node server/test/run-tests.mjs` must report
   `0 failed`. Do not restate the total in docs — it has drifted twice, once
   advertising a count that had never actually passed. The suite prints its own

@@ -5,7 +5,7 @@
 //
 //   node scripts/configure-codex.mjs                 # ensure keep-awake
 //   node scripts/configure-codex.mjs --https-only    # + HTTPS-only ChatGPT provider
-//   node scripts/configure-codex.mjs --model gpt-5.6-sol --effort ultra
+//   node scripts/configure-codex.mjs --model gpt-6-astra --effort ultra
 //   node scripts/configure-codex.mjs --verify        # report; exit 1 if keep-awake is off
 //
 // What it manages (and nothing else — every other line is preserved verbatim):

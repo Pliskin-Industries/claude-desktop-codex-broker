@@ -50,35 +50,48 @@ export function brokerConfigOverrides(env = process.env) {
   return out;
 }
 
-// codex exec --json ... -o <lastMessageFile> [-c overrides] [-m model] -s <sandbox> -
-export function buildTaskArgs({ sandbox, model, lastMessageFile, network, env = process.env }) {
+// Per-call reasoning effort (v1.7.0). The global default lives in
+// ~/.codex/config.toml (model_reasoning_effort); a call may override it so an
+// orchestrator can run reviews at `ultra` and scoped implementation at `max`
+// without touching the machine-wide file. The server validates against the
+// allowlist; this is the argv-level backstop (a bare word, nothing else).
+function effortOverride(effort) {
+  if (effort === undefined || effort === null || effort === "") return [];
+  if (typeof effort !== "string" || !/^[a-z]+$/.test(effort)) {
+    throw new Error(`Refusing to build a codex command with an unsafe reasoning effort: ${String(effort)}`);
+  }
+  return ["-c", `model_reasoning_effort="${effort}"`];
+}
+
+// codex exec --json ... -o <lastMessageFile> [-c overrides] [-c effort] [-m model] -s <sandbox> -
+export function buildTaskArgs({ sandbox, model, effort, lastMessageFile, network, env = process.env }) {
   const argv = ["exec", "--json", "--skip-git-repo-check", "-s", sandbox, "-o", lastMessageFile];
   // Opt-in network for git push/pull etc. Only meaningful with workspace-write;
   // filesystem sandboxing is unchanged. Never combined with danger flags.
   if (network && sandbox === "workspace-write") argv.push("-c", "sandbox_workspace_write.network_access=true");
-  argv.push(...brokerConfigOverrides(env));
+  argv.push(...brokerConfigOverrides(env), ...effortOverride(effort));
   if (model) argv.push("-m", model);
   argv.push("-"); // prompt from stdin
   return assertSafe(argv);
 }
 
-// codex exec resume --json ... -o <file> [-c overrides] [-m model] <session_id> -
+// codex exec resume --json ... -o <file> [-c overrides] [-c effort] [-m model] <session_id> -
 // NOTE: resume has no -s/--sandbox flag; it inherits the original session's
 // sandbox. It also has no --cd; cwd is set via the spawn option.
-export function buildResumeArgs({ sessionId, model, lastMessageFile, env = process.env }) {
+export function buildResumeArgs({ sessionId, model, effort, lastMessageFile, env = process.env }) {
   const argv = ["exec", "resume", "--json", "--skip-git-repo-check", "-o", lastMessageFile];
-  argv.push(...brokerConfigOverrides(env));
+  argv.push(...brokerConfigOverrides(env), ...effortOverride(effort));
   if (model) argv.push("-m", model);
   argv.push(sessionId, "-"); // session id positional, then prompt from stdin
   return assertSafe(argv);
 }
 
-// codex exec review --json ... -o <file> [-c overrides] [-m model] [-]
+// codex exec review --json ... -o <file> [-c overrides] [-c effort] [-m model] [-]
 // review is inherently read-only (no -s flag). Focus text, when present, is
 // passed as the custom review instruction via stdin ("-").
-export function buildReviewArgs({ model, hasFocus, lastMessageFile, env = process.env }) {
+export function buildReviewArgs({ model, effort, hasFocus, lastMessageFile, env = process.env }) {
   const argv = ["exec", "review", "--json", "--skip-git-repo-check", "-o", lastMessageFile];
-  argv.push(...brokerConfigOverrides(env));
+  argv.push(...brokerConfigOverrides(env), ...effortOverride(effort));
   if (model) argv.push("-m", model);
   if (hasFocus) argv.push("-");
   return assertSafe(argv);
