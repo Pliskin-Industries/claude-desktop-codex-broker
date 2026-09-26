@@ -17,7 +17,8 @@ Then tell Claude Code:
 
 Claude Code reads `CLAUDE.md`, checks prerequisites (Node ≥ 18.18, Codex CLI,
 git), runs `npm ci --prefix server`, installs the `codex-delegation` skill to
-`~/.claude/skills/`, runs the test suite, and walks you through the one step
+`~/.claude/skills/`, configures the Codex CLI (`scripts/configure-codex.mjs`:
+keep-awake plus model and effort defaults), runs the test suite, and walks you through the one step
 it cannot do for you: `codex login` (interactive, bills to your ChatGPT plan or
 API key).
 
@@ -34,13 +35,17 @@ A literal absolute path also works when registering from outside the clone.
 
 ## Path B — manual
 
-1. Prerequisites: Node ≥ 18.18, `npm install -g @openai/codex` + `codex login`,
-   git; optionally GitHub CLI (`gh auth login`) for `gh_repo_create`.
+1. Prerequisites: Node ≥ 18.18, Codex CLI ≥ 0.153.1
+   (`npm install -g @openai/codex@latest`, then `codex login`), git; optionally
+   the GitHub CLI (`gh auth login`), which only the `gh_*` tools need.
 2. `npm ci --prefix server` from the repo root.
 3. Register the server (project scope comes free via `.mcp.json`; user scope
    via the `claude mcp add` command above).
 4. Copy `skill/` to `~/.claude/skills/codex-delegation/`.
-5. Verify: `cd server && node test/run-tests.mjs` → `0 failed`. Restart Claude Code,
+5. `node scripts/configure-codex.mjs --model gpt-6-astra --effort ultra`. It
+   backs up `~/.codex/config.toml` before writing and leaves every other line
+   alone; `--verify` reports the current state without writing.
+6. Verify: `cd server && node test/run-tests.mjs` → `0 failed`. Restart Claude Code,
    confirm the tools are listed, then run a `codex_task` smoke test
    ("Reply with exactly: READY").
 

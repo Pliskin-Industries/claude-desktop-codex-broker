@@ -53,7 +53,16 @@ Full walkthrough with verification steps: [docs/INSTALL-WINDOWS.md](docs/INSTALL
 
 Clone the repo, open Claude Code inside it, and say: **"Set up the Codex broker per CLAUDE.md."** Claude Code checks prerequisites, installs server deps, installs the skill, configures the Codex CLI (keep-awake, model and effort defaults via `scripts/configure-codex.mjs`), runs the test suite, and tells you the one step it can't do for you (`codex login`). The repo's `.mcp.json` provides the project-scoped server (tools appear as `mcp__codex-broker__*`); [CLAUDE.md](CLAUDE.md) includes the user-scoped registration command for using the broker from any directory.
 
-Details and the manual path: [docs/INSTALL-CLAUDE-CODE.md](docs/INSTALL-CLAUDE-CODE.md).
+Doing it by hand instead (commands run from the repo root):
+
+1. **Prerequisites.** Node ≥ 18.18 and git on `PATH`. Codex CLI ≥ 0.153.1 (the first build that accepts `gpt-6-astra`): `npm install -g @openai/codex@latest`, then run `codex login` yourself — it is interactive and bills to your ChatGPT plan or API key. The GitHub CLI (`gh auth login`) is optional; only the `gh_*` tools need it.
+2. **Server dependencies.** `npm ci --prefix server` (the MCP server won't start without it).
+3. **Register the server.** Inside this repo, `.mcp.json` does it; approve the `codex-broker` project server when Claude Code asks. To use it from any directory: `claude mcp add --scope user codex-broker -- node "<absolute path>\server\server.mjs"`.
+4. **Install the skill.** Copy `skill/` to `~/.claude/skills/codex-delegation` (replace any older copy).
+5. **Configure Codex.** `node scripts/configure-codex.mjs --model gpt-6-astra --effort ultra` turns on keep-awake and sets the model and effort defaults, after backing up `~/.codex/config.toml`. Check the result with `--verify`.
+6. **Verify.** `cd server && node test/run-tests.mjs` should report `0 failed`. Restart Claude Code, confirm the fifteen `mcp__codex-broker__*` tools are listed, then run `codex_task` with the prompt "Reply with exactly: READY". Seeing `READY` means Codex resolves and authenticates.
+
+More detail, including how to add Claude Code next to an existing Desktop install: [docs/INSTALL-CLAUDE-CODE.md](docs/INSTALL-CLAUDE-CODE.md).
 
 ## Tools
 
