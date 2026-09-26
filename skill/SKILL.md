@@ -160,9 +160,9 @@ Known prefixes:
 Same fifteen tools whichever prefix is in play:
 
 - `codex_task(prompt, cwd, model?, reasoning_effort?, sandbox?, timeout_seconds?)` — synchronous.
-  Short tasks only (under ~4 min). Blocks until done.
+  Short tasks only (under ~45 seconds; see Task scoping rules). Blocks until done.
 - `codex_start(prompt, cwd, model?, reasoning_effort?, sandbox?, max_idle_seconds?) -> job_id` —
-  background. Use for anything that might exceed ~4 min or is open-ended.
+  background. Use for anything that might exceed ~45 seconds or is open-ended.
   `max_idle_seconds` (v1.6.0) is the stall guard: the broker kills the job if
   its output log stops growing for that long. Pass it on every long run
   (1200 is the standing value); the alternative is a job that sits for hours.
@@ -257,8 +257,18 @@ writing a non-trivial Codex prompt.
 
 ## Git sync protocol
 
-You work in a cloud container. Codex edits the user's *local* disk. GitHub is the
-only shared surface between the two. Get this wrong and work is lost.
+First decide which topology you are in:
+
+- **Cross-machine** (Cowork, claude.ai, Claude Code on the web): you work in a
+  cloud container and Codex edits the user's *local* disk. GitHub is the only
+  shared surface between the two. Get this wrong and work is lost. Follow the
+  loop below.
+- **Same-host** (Claude Code or Claude Desktop on the machine that runs the
+  broker): you and Codex read and write the same disk. Use "Same-host mode"
+  below instead of the loop; pushing to GitHub so Codex can pull it back onto
+  the disk you already share is pure overhead.
+
+The test: can you read the delegation `cwd` yourself? If yes, you are same-host.
 
 The full command sequence, branch conventions, and edge cases are in
 `references/git-protocol.md`. Load it before any delegation that writes code.
@@ -284,6 +294,32 @@ Summary of the loop:
    the branch back with feedback via `codex_resume`.
 6. **No remote fallback.** If there is no remote, stop and ask the user. Do not
    invent a sync mechanism.
+
+### Same-host mode
+
+When you share a disk with Codex, the working tree is the shared surface, not
+GitHub. What changes:
+
+- **Skip steps 2 and 5 of the loop, and the remote precondition.** Nothing needs
+  pushing for Codex to see it, and you review the diff in place. Local-only
+  repos are fine.
+- **You own the branch; Codex owns the edits.** The `.git` write-protection
+  (see Failure handling) still applies, so Codex cannot branch or commit in
+  the user's clone. Before delegating: confirm the tree is clean, then create
+  and check out `codex/<task-slug>` yourself. Delegate with `cwd` set to the
+  working directory and tell Codex to edit files only: no git writes, no
+  temp clone.
+- **Review, then commit.** Inspect `git diff` and run the tests yourself. If
+  it passes, commit with `git_commit`, or with git directly since you have it.
+  If not, send the delta back with `codex_resume`. Codex output is still a
+  proposal, never an auto-merge.
+- **Push only when the user wants the work on GitHub.** Then `git_push` (or
+  `gh_pr_create`) as usual.
+
+If the task needs Codex's own commit history (a long multi-commit series), use
+the temp-clone pattern from `references/git-protocol.md` and fetch the branch
+straight from the clone path (`git fetch <temp-clone> codex/<slug>`). There is
+still no GitHub round trip.
 
 ## Failure handling
 

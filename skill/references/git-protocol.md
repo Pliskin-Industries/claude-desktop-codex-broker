@@ -1,8 +1,11 @@
 # Git Sync Protocol
 
-You (Fable) run in a cloud container. Codex edits the user's local disk. GitHub
-is the only shared surface. Every write delegation goes through git or the work
-does not sync. Follow this exactly.
+This is the cross-machine protocol: you run in a cloud container and Codex edits
+the user's local disk. GitHub is the only shared surface. Every write delegation
+goes through git or the work does not sync. Follow this exactly.
+
+If you share a disk with Codex (Claude Code or Claude Desktop on the broker's
+machine), use "Same-host mode" in SKILL.md instead.
 
 ## Preconditions (check before delegating)
 
@@ -142,8 +145,6 @@ codex/<task-slug> branch — do not push; I handle the push.>", cwd=<cwd>)
 ```
 
 After Codex commits the revision, push it yourself: `git_push(cwd, "codex/<task-slug>")`.
-```
-```
 
 Then re-fetch and re-review (Step 3). Repeat until it meets your bar.
 

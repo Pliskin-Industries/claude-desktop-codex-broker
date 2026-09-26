@@ -22,10 +22,20 @@ The broker exposes these MCP tools:
 | `codex_result` | Final assistant message + exit status + session id; errors if still running. |
 | `codex_cancel` | Kill a job's process tree. |
 | `codex_review` | Run `codex exec review` (read-only) against a repo. Optional `focus` text; `background:true` returns a `job_id`. |
-| `codex_resume` | Continue a previous Codex session by `session_id` with a new prompt. |
+| `codex_resume` | Continue a previous Codex session by `thread_id` with a new prompt. |
+| `git_push` | Push an existing local branch, outside the sandbox where credentials work. Never force-pushes. |
+| `git_pull` | `git pull --ff-only`. Never merges or rebases. |
+| `git_commit` | Stage and commit in one call, outside the sandbox (Codex cannot write `.git`). |
+| `git_clone` | Credentialed clone. https URLs only; `dest` must be a new absolute path. |
+| `gh_repo_create` | Create a GitHub repo from the local repository at `cwd` and push it. |
+| `gh_read` | Read-only `gh` dispatcher, allowlisted to `pr` / `issue` / `run` / `release` / `repo` queries. |
+| `gh_pr_create` | Open a pull request from the repo at `cwd`. Never merges. |
+| `gh_issue_create` | Create an issue on the repo at `cwd`, or on `--repo owner/name`. |
 
 `codex_task` / `codex_result` / `codex_status` surface the Codex **session id**,
-which you pass to `codex_resume` to continue a thread.
+which you pass to `codex_resume` as `thread_id` to continue a thread. The
+parameter is deliberately not called `session_id`: the Cowork device bridge
+strips parameters with that name (see docs/LESSONS.md #4).
 
 ## Prerequisites
 
