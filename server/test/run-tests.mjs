@@ -590,7 +590,8 @@ async function main() {
     const good = await client.call("codex_task", { prompt: "effort check", cwd: workDir, reasoning_effort: "max" });
     assert(!good.isError && /Status: completed/.test(good.text), `valid effort rejected: ${good.text}`);
     // Background jobs return their job_id, so inspect the spawned argv there.
-    const readMeta = (text) => JSON.parse(fs.readFileSync(path.join(brokerHome, "jobs", extractJobId(text), "meta.json"), "utf8"));
+    const { readJsonSafe } = await import("../lib/jobs.mjs");
+    const readMeta = (text) => readJsonSafe(path.join(brokerHome, "jobs", extractJobId(text), "meta.json"));
     const meta = readMeta(await (await client.call("codex_start", { prompt: "effort check", cwd: workDir, reasoning_effort: "max" })).text);
     const i = meta.argv.indexOf('model_reasoning_effort="max"');
     assert(i > 0 && meta.argv[i - 1] === "-c", `override missing from spawned argv: ${meta.argv.join(" ")}`);
@@ -598,6 +599,45 @@ async function main() {
     assert(!metaPlain.argv.some((x) => /model_reasoning_effort/.test(x)), "override leaked into a call that omitted it");
     const metaBg = readMeta((await client.call("codex_review", { cwd: workDir, background: true, reasoning_effort: "ultra" })).text);
     assert(metaBg.argv.includes('model_reasoning_effort="ultra"'), `background review lacks override: ${metaBg.argv.join(" ")}`);
+  });
+
+  await test("meta.json survives concurrent rewrites: readJsonSafe never sees a partial file", async () => {
+    // CI caught `Unexpected end of JSON input` reading meta.json while the
+    // broker rewrote it. A second process reads through readJsonSafe in a
+    // tight loop while this one rewrites the file; any null is a failure.
+    const { writeMeta } = await import("../lib/jobs.mjs");
+    const jobsUrl = pathToFileURL(path.join(HERE, "..", "lib", "jobs.mjs")).href;
+    const dir = fs.mkdtempSync(path.join(tmpRoot, "atomic-meta-"));
+    const metaFile = path.join(dir, "meta.json");
+    const meta = { argv: Array.from({ length: 400 }, (_, i) => `arg-${i}`), n: 0 };
+    writeMeta(metaFile, meta);
+    const reader = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `const { readJsonSafe } = await import(${JSON.stringify(jobsUrl)});` +
+          `let bad=0,reads=0;const end=Date.now()+1500;` +
+          `while(Date.now()<end){readJsonSafe(process.argv[1])===null?bad++:reads++}` +
+          `process.stdout.write(JSON.stringify({bad,reads}))`,
+        metaFile,
+      ],
+      { env: childEnv, stdio: ["ignore", "pipe", "ignore"] }
+    );
+    let out = "";
+    reader.stdout.on("data", (d) => (out += d));
+    const done = new Promise((resolve) => reader.on("exit", resolve));
+    const until = Date.now() + 1300;
+    while (Date.now() < until) {
+      meta.n++;
+      writeMeta(metaFile, meta);
+      await new Promise((r) => setImmediate(r));
+    }
+    await done;
+    const { bad, reads } = JSON.parse(out);
+    assert(reads > 0, "reader never completed a read");
+    assert(bad === 0, `${bad} of ${bad + reads} concurrent reads saw a partial meta.json`);
+    assert(fs.readdirSync(dir).length === 1, `temp files left behind: ${fs.readdirSync(dir).join(", ")}`);
   });
 
   await test("codex_status reports idle time and warns once output goes quiet", async () => {

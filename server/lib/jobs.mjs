@@ -128,12 +128,22 @@ function jobPath(jobId, ...rest) {
   return path.join(jobsDir(), jobId, ...rest);
 }
 
-function readJsonSafe(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return null;
+// A missing file is null at once. A file that exists but will not parse is
+// most likely mid-rewrite (see writeMeta), so give the writer a few ms
+// before concluding it is corrupt.
+export function readJsonSafe(file) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (err) {
+      if (err.code === "ENOENT" || attempt >= 5) return null;
+      sleepSync(5 * (attempt + 1));
+    }
   }
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function appendLog(file, text) {
@@ -234,8 +244,28 @@ function createJobArtifacts({ jobClass, builder, cwd, promptText, model, sandbox
   return { jobId, dir, promptFile, lastMessageFile, outputLog, exitFile, metaFile, argv, meta };
 }
 
-function writeMeta(metaFile, meta) {
-  fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
+// writeFileSync truncates before writing, so a concurrent reader (codex_status,
+// readJob, the forensics script) could see an empty file and treat a live job
+// as missing. Write a sibling temp file and rename it over the original;
+// readers see the old meta or the new one, never neither. On POSIX that rename
+// is always atomic. Windows refuses it (EPERM) while any process has meta.json
+// open, so retry briefly, then fall back to a direct write: never lose the
+// update, and readJsonSafe's parse retry covers the short truncation window.
+export function writeMeta(metaFile, meta) {
+  const body = JSON.stringify(meta, null, 2);
+  const tmp = `${metaFile}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, body);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      fs.renameSync(tmp, metaFile);
+      return;
+    } catch (err) {
+      if (err.code !== "EPERM" && err.code !== "EACCES" && err.code !== "EBUSY") break;
+      sleepSync(5 * (attempt + 1));
+    }
+  }
+  fs.rmSync(tmp, { force: true });
+  fs.writeFileSync(metaFile, body);
 }
 
 // DIRECT synchronous execution: spawn codex.exe directly from the server and
