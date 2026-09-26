@@ -64,6 +64,20 @@ Doing it by hand instead (commands run from the repo root):
 
 More detail, including how to add Claude Code next to an existing Desktop install: [docs/INSTALL-CLAUDE-CODE.md](docs/INSTALL-CLAUDE-CODE.md).
 
+## Updating the broker
+
+With the extension's **Broker checkout** setting pointed at a clone (Desktop quick start, step 3), an update is one command from that clone:
+
+```powershell
+node scripts/update-broker.mjs
+```
+
+It pulls, reinstalls server dependencies only if they changed, runs the tests, and restarts Claude Desktop only if they pass. The restart closes only Claude Desktop's own processes, waits until they're gone, and reopens the app, so there's no trip to Task Manager. You can run it from inside a Claude session; that session closes with the app and you reopen it afterwards. Useful flags: `--restart-only` (for example after installing Node or the Codex CLI, since a running app keeps its old PATH), `--no-restart`, and `--dry-run`. Restart automation is Windows-only for now.
+
+Nothing updates on its own; you run the command. Details, the manual route, and the bundled-copy route: [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md#updating-the-broker).
+
+A Claude Code CLI registration runs `server/server.mjs` from the clone directly, so it needs only `git pull` (plus `npm ci --prefix server` if dependencies changed) and a new Claude Code session.
+
 ## Tools
 
 `codex_task` (sync, <45s jobs) · `codex_start` / `codex_status` / `codex_result` / `codex_cancel` (background jobs — the default for real work) · `codex_review` (read-only review) · `codex_resume` (continue a thread) · `git_push` / `git_pull` / `git_commit` / `git_clone` / `gh_repo_create` / `gh_pr_create` / `gh_issue_create` / `gh_read` (broker-side git/GitHub — credentialed, validated, outside the Codex sandbox; `gh_read` is a read-only allowlisted dispatcher for `pr` / `issue` / `run` / `release` / `repo` queries, which also makes the broker a lightweight GitHub bridge for Claude Desktop chat and Cowork). Background jobs report seconds since their output last grew and warn when they go quiet; pass `max_idle_seconds` to have the broker kill a stalled job instead of leaving it for hours (v1.6.0, [LESSONS #9](docs/LESSONS.md)). Every codex tool accepts `reasoning_effort` (low, medium, high, xhigh, max, ultra) to override the `~/.codex/config.toml` default for that call alone — `ultra` for reviews, `max` for scoped implementation (v1.7.0).

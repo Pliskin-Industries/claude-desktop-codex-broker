@@ -120,5 +120,5 @@ registration in `~/.claude.json` actually uses.
   [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Claude Desktop / Cowork install** (the .mcpb route): see
   [INSTALL-WINDOWS.md](INSTALL-WINDOWS.md).
-- **Something broken?** [LESSONS.md](LESSONS.md) — nine field-verified failure
+- **Something broken?** [LESSONS.md](LESSONS.md) — field-verified failure
   modes with symptoms, causes, and fixes.

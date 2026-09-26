@@ -16,6 +16,13 @@ import {
 } from "../lib/util.mjs";
 import { buildResumeArgs, buildReviewArgs, buildTaskArgs } from "../lib/codex.mjs";
 import { applyChanges, report as configReport } from "../../scripts/configure-codex.mjs";
+import {
+  needsDepsInstall,
+  parseArgs as updaterArgs,
+  pickLaunchTarget,
+  rootProcesses,
+  selectAppProcesses,
+} from "../../scripts/update-broker.mjs";
 import { correlate, errorBuckets, findJob, report as forensicsReport } from "../lib/forensics.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -690,6 +697,57 @@ async function main() {
     assert(bad.isError && /max_idle_seconds/.test(bad.text), `bad value accepted: ${bad.text}`);
     const rv = await client.call("codex_review", { cwd: workDir, background: true, max_idle_seconds: 1 });
     assert(rv.isError && /max_idle_seconds/.test(rv.text), `review accepted bad value: ${rv.text}`);
+  });
+
+  await test("update-broker stops only Claude Desktop's processes and relaunches the right app", async () => {
+    const env = { ProgramFiles: "C:\\Program Files", APPDATA: "C:\\Users\\u\\AppData\\Roaming", LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local" };
+    const store = pickLaunchTarget({
+      startApps: [{ Name: "Claude", AppID: "Claude_pzs8sxrjxfjjc!Claude" }],
+      env,
+      exists: () => false,
+    });
+    assert(store.kind === "store", `expected store, got ${store && store.kind}`);
+    assert(store.launch.join(" ") === "explorer.exe shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude", `launch: ${store.launch}`);
+
+    const procs = [
+      { ProcessId: 10, ParentProcessId: 1, ExecutablePath: "C:\\Program Files\\WindowsApps\\Claude_2.9939.2.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe" },
+      { ProcessId: 11, ParentProcessId: 10, ExecutablePath: "C:\\Program Files\\WindowsApps\\Claude_2.9939.2.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe" },
+      { ProcessId: 12, ParentProcessId: 10, ExecutablePath: "C:\\Users\\u\\AppData\\Roaming\\Claude\\claude-code\\2.1.281\\claude.exe" },
+      // Must survive: a standalone Claude Code CLI, another publisher's lookalike, a prefix-only match, no path.
+      { ProcessId: 20, ParentProcessId: 2, ExecutablePath: "C:\\Users\\u\\.local\\bin\\claude.exe" },
+      { ProcessId: 21, ParentProcessId: 2, ExecutablePath: "C:\\Program Files\\WindowsApps\\Claude_1.0.0.0_x64__evilpublisher\\claude.exe" },
+      { ProcessId: 22, ParentProcessId: 2, ExecutablePath: "C:\\Users\\u\\AppData\\Roaming\\Claude\\claude-code-evil\\claude.exe" },
+      { ProcessId: 23, ParentProcessId: 2, ExecutablePath: null },
+    ];
+    const picked = selectAppProcesses(procs, { target: store, env }).map((p) => p.ProcessId);
+    assert(picked.join(",") === "10,11,12", `wrong processes selected: ${picked}`);
+    const roots = rootProcesses(selectAppProcesses(procs, { target: store, env })).map((p) => p.ProcessId);
+    assert(roots.join(",") === "10", `wrong roots: ${roots}`);
+
+    const direct = pickLaunchTarget({ startApps: [], env, exists: (p) => p === "C:\\Users\\u\\AppData\\Local\\AnthropicClaude\\claude.exe" });
+    assert(direct.kind === "direct", `expected direct, got ${direct && direct.kind}`);
+    const dp = [
+      { ProcessId: 30, ParentProcessId: 1, ExecutablePath: "C:\\Users\\u\\AppData\\Local\\AnthropicClaude\\app-1.2.3\\claude.exe" },
+      { ProcessId: 31, ParentProcessId: 1, ExecutablePath: "C:\\Users\\u\\AppData\\Local\\AnthropicClaudeEvil\\claude.exe" },
+    ];
+    assert(selectAppProcesses(dp, { target: direct, env }).map((p) => p.ProcessId).join(",") === "30", "direct install selection wrong");
+    assert(pickLaunchTarget({ startApps: [], env, exists: () => false }) === null, "no install should yield null");
+  });
+
+  await test("update-broker reinstalls deps only when needed and rejects unknown flags", async () => {
+    assert(!needsDepsInstall(["README.md", "server/lib/jobs.mjs"], true), "docs/code change should not reinstall");
+    assert(needsDepsInstall(["server/package-lock.json"], true), "lockfile change must reinstall");
+    assert(needsDepsInstall(["server\\package.json"], true), "backslash paths must match");
+    assert(needsDepsInstall([], false), "missing node_modules must install");
+    const o = updaterArgs(["--restart-only", "--dry-run"]);
+    assert(!o.pull && !o.tests && o.restart && o.dryRun, `restart-only parse: ${JSON.stringify(o)}`);
+    let threw = false;
+    try {
+      updaterArgs(["--force"]);
+    } catch {
+      threw = true;
+    }
+    assert(threw, "unknown flag must be rejected");
   });
 
   await test("configure-codex applies keep-awake, https-only, model and effort idempotently", async () => {

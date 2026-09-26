@@ -1,6 +1,6 @@
 # Field-Testing Lessons
 
-Eight real defects found and fixed while bringing this system up on a Windows 11 machine with the Microsoft Store build of Claude Desktop. Recorded because every one of them produces confusing symptoms that would cost the next person hours.
+Real defects found and fixed while bringing this system up on a Windows 11 machine with the Microsoft Store build of Claude Desktop. Recorded because every one of them produces confusing symptoms that would cost the next person hours.
 
 ## 1. The extension host is Electron, and `process.execPath` is a trap
 
@@ -77,6 +77,16 @@ Eight real defects found and fixed while bringing this system up on a Windows 11
 **Fix (v1.6.0):** three layers. (1) The broker passes `-c features.prevent_idle_sleep=true` on every codex spawn, and `scripts/configure-codex.mjs` writes it into `~/.codex/config.toml` during setup, so idle sleep is inhibited while a turn runs (lid close and battery policies still win: keep the machine on AC with the lid open for long jobs). (2) `codex_status` now reports seconds since the job's output last grew and warns past a threshold; `max_idle_seconds` on `codex_start` / background `codex_review` has the broker kill a job that goes silent instead of leaving it for hours. (3) Optional HTTPS-only provider (`--https-only` in the config script, or `CODEX_BROKER_TRANSPORT=https`) removes the WebSocket retry storm that made the logs look like a transport bug — verified on codex-cli 0.145.0: a custom `[model_providers.*]` with `supports_websockets = false` and `requires_openai_auth = true` is honored even though the `responses_websockets` feature flag reads "removed".
 
 **Diagnostic rule:** an error that names the resolver (11001) is not evidence about the resolver until you have correlated the timestamps with the power and WLAN event logs. Read the job's `output.log` first; it is always there (under the `CODEX_BROKER_HOME` the registration set, which may not be `~/.codex-broker`).
+
+## 10. A "restarted" app can still be the old process, with the old PATH
+
+**Symptom:** Node and the Codex CLI were installed and `codex --version` worked in a new terminal, but the Desktop extension's `codex_task` failed instantly with `spawn codex.exe ENOENT`. The user had quit Claude Desktop from the system tray, and the project-scoped Claude Code server still reported `Connection closed`.
+
+**Cause:** two things stacked. A Windows process keeps the environment it started with, and every Claude Desktop process (the app, its extension hosts, the desktop-managed Claude Code) inherits the app's. An app started before Node or Codex was installed never sees them on PATH, however many sessions are opened. And the tray quit had not ended the app: `Get-CimInstance Win32_Process` showed every `Claude.exe` still carrying its original start time, 35 minutes before the Codex install. Closing a session does not help either; the extension belongs to the app, not the session.
+
+**Fix:** end every Claude Desktop process (Task Manager → Claude → End task) and start it from the Start menu. `scripts/update-broker.mjs --restart-only` does exactly that without Task Manager: a helper created through WMI (so it survives Claude exiting) stops only Claude Desktop's processes, waits until they are gone, and relaunches the app through Explorer, which hands it the shell's current environment. Plain `update-broker.mjs` also pulls the checkout, reinstalls server deps if they changed, and runs the tests before restarting.
+
+**Diagnostic rule:** "I restarted it" is a claim about process start times. Compare `CreationDate` on the `Claude.exe` processes with the time of the install or `git pull` before debugging anything else.
 
 ## Meta-lesson
 

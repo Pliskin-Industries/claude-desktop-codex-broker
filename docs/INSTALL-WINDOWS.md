@@ -65,7 +65,21 @@ flowchart TD
 
 ## Updating the broker
 
-**If the extension points at a checkout (step 3.3):** `git pull` in the clone (and `npm ci --prefix server` if `server/package.json` changed), then quit Claude Desktop from the **system tray** and reopen. The running server process never restarts on its own, so the restart is the whole update. No download, no rebuild, no reinstall. Which code is live is printed on the broker's stderr at start: `codex-broker launcher: running from checkout <path>` or `running bundled server (<reason>)`.
+**If the extension points at a checkout (step 3.3):** one command, from the clone:
+
+```powershell
+node scripts/update-broker.mjs
+```
+
+It runs `git pull --ff-only`, reinstalls server dependencies only if `server/package.json` or its lockfile changed, runs the test suite, and, if the tests pass, restarts Claude Desktop. The restart stops only Claude Desktop's own processes (not a Claude Code CLI you run in a terminal), waits until they are all gone, and reopens the app. It works from inside a Claude session too: that session ends with the app, and you reopen it afterwards. Progress of the restart goes to `%TEMP%\codex-broker-restart.log`.
+
+- `--restart-only` just restarts the app. Use it after installing or upgrading Node or the Codex CLI: a running app keeps the PATH it started with ([LESSONS #10](LESSONS.md)).
+- `--no-restart` updates and tests now and leaves the restart for later.
+- `--dry-run` prints what it would do and changes nothing.
+
+The running server process never restarts on its own, so the restart is the whole update. No download, no rebuild, no reinstall. Which code is live is printed on the broker's stderr at start: `codex-broker launcher: running from checkout <path>` or `running bundled server (<reason>)`.
+
+By hand: `git pull`, `npm ci --prefix server` if the dependency files changed, then quit Claude Desktop from the **system tray** and confirm in Task Manager that no **Claude** processes remain (end them if they do) before reopening. A tray quit does not always end the app.
 
 **If it runs the bundled copy:** extension updates do NOT restart the running server — the version card will lie to you. Full cycle, every time:
 
@@ -82,6 +96,7 @@ flowchart TD
 |---|---|
 | Tools don't appear in a session | Extension not enabled, or app not fully restarted after install (tray-quit) |
 | `codex_task` fails instantly, no output | Check `%USERPROFILE%\.codex-broker\jobs\<id>\output.log` |
+| `spawn codex.exe ENOENT` right after installing Node or Codex | The app was started before the install and still has the old PATH, even after a tray quit. `node scripts/update-broker.mjs --restart-only`, or end **Claude** in Task Manager and reopen it ([LESSONS #10](LESSONS.md)) |
 | Job log full of `No such host is known (os error 11001)` / `Reconnecting… n/5` | The machine slept or Wi-Fi dropped, not DNS ([LESSONS #9](LESSONS.md)). `codex_status` / `codex_result` print an automatic forensics verdict for such jobs; keep the laptop on AC with the lid open for long runs |
 | Push fails: "dubious ownership" | Broker v1.3.1+ handles this automatically; on older versions: `git config --global --add safe.directory "<project path>"` |
 | Push fails: auth error | `gh auth status` in PowerShell; re-run `gh auth login` if expired |

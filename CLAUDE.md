@@ -130,8 +130,10 @@ failure rather than improvising around it.
   `.mcpb` entry point: when the extension's "Broker checkout" setting
   (`CODEX_BROKER_REPO`) names a clone with `server/node_modules` installed, it
   imports that clone's `server/server.mjs`; otherwise the bundled copy. So a
-  server change reaches Claude Desktop/Cowork by `git pull` + tray-restart,
-  with no rebuild or reinstall. A rebuild is only needed when the bundled
+  server change reaches Claude Desktop/Cowork by `node scripts/update-broker.mjs`
+  (pull, deps if changed, tests, then a real app restart; `--restart-only`
+  after installing Node or Codex), with no rebuild or reinstall. Run from
+  inside a Desktop session, it ends that session; say so before running it. A rebuild is only needed when the bundled
   fallback itself should change (a new release).
 - **Failed jobs explain themselves.** `codex_status` / `codex_result` append
   an automatic forensics block (`server/lib/forensics.mjs`) to any failed or
@@ -148,6 +150,6 @@ failure rather than improvising around it.
   Windows, so `--verify` assumes a `core.autocrlf=true` checkout. On a checkout
   with LF endings it reports every file as differing; that is the line endings,
   not a corrupt archive.
-- **docs/LESSONS.md is the debugging map.** Nine field-verified failure modes
+- **docs/LESSONS.md is the debugging map.** Field-verified failure modes
   with symptoms and fixes. Check it before diagnosing anything Windows- or
   Desktop-host-related.
