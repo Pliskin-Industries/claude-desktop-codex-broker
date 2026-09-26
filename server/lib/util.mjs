@@ -332,6 +332,29 @@ export function validateHttpsGitUrl(value) {
   return v;
 }
 
+// Compose the environment for a broker-side git/gh invocation, scoping a
+// safe.directory exception to exactly `cwd`. Codex's sandbox runs as a separate
+// OS user, so repos it creates look "dubiously owned" to the broker user.
+//
+// git reads config from GIT_CONFIG_COUNT plus GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n.
+// Hosts frequently pre-populate those: Claude Code on the web injects
+// credential.interactive=false and two url.*.insteadOf rewrite rules that way.
+// Writing safe.directory to index 0 with COUNT=1 silently discards every
+// inherited rule — breaking credential handling and SSH-to-HTTPS rewriting — so
+// append at the next free index instead.
+export function buildGitConfigEnv(env, cwd) {
+  const parsed = Number.parseInt(env.GIT_CONFIG_COUNT ?? "", 10);
+  // A malformed or absent count means there is nothing trustworthy to preserve;
+  // git itself would reject it. Start from zero rather than guessing.
+  const inherited = Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+  return {
+    ...env,
+    [`GIT_CONFIG_KEY_${inherited}`]: "safe.directory",
+    [`GIT_CONFIG_VALUE_${inherited}`]: cwd,
+    GIT_CONFIG_COUNT: String(inherited + 1),
+  };
+}
+
 // Destination for git_clone: absolute, must NOT exist, parent must exist.
 export function validateNewDirPath(value, label = "dest") {
   const v = requireString(value, label);
