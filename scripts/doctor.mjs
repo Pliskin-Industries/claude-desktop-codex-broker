@@ -5,6 +5,7 @@
 //   node scripts/doctor.mjs          # human-readable report; exit 1 if anything required fails
 //   node scripts/doctor.mjs --json   # machine-readable report
 //   node scripts/doctor.mjs --plugin # as run by the plugin's /codex-broker:setup
+//   node scripts/doctor.mjs --claude-model claude-opus-5-5   # also verify that model's saved effort
 //
 // Every check here maps to a failure that has cost real time (docs/LESSONS.md):
 // a Codex CLI too old for the configured model, a login that lapsed, the
@@ -71,58 +72,111 @@ export function sandboxVerdict(doctorJson, platform) {
 }
 
 // The orchestrator should be the newest Opus at High effort (skill/SKILL.md,
-// model hierarchy). settings is ~/.claude/settings.json. The doctor can't know
-// which Opus is newest, so it checks the two things that make that automatic:
-// the `opus` alias (a full id stays pinned) and a saved High effort per model
-// (from Opus 5.5 on, a top-level effortLevel is ignored and each new model
-// starts at its own default, medium for Opus 5.5).
-export function claudeModelVerdict(settings, env = {}) {
+// model hierarchy). `settings` is the active Claude Code settings.json. Two
+// things make "newest" automatic: the `opus` alias (a full id stays pinned) and
+// a saved High effort for the model actually running (effort is saved per model
+// id; from Opus 5.5 on a top-level effortLevel is ignored and each new model
+// starts at its own default, medium for Opus 5.5). The doctor can't know which
+// id the alias resolves to, so the effort check needs `runningModel` (the
+// setup skill passes the session's own id); without it the effort is reported
+// as unverified rather than passed.
+export function claudeModelVerdict(settings, env = {}, { runningModel = null, settingsFile = "~/.claude/settings.json" } = {}) {
   const problems = [];
+  const fixes = [];
   const model = settings?.model;
   if (!model) problems.push("no default model set; sessions use the plan default");
   else if (/^claude-/.test(model)) problems.push(`model pinned to ${model}; it won't move to a newer release`);
   else if (!["opus", "opus[1m]"].includes(model)) problems.push(`default model is "${model}"; the orchestrator should be Opus`);
-  const efforts = Object.entries(settings?.modelSettings || {})
-    .filter(([id]) => /^claude-(opus|fable)-/.test(id))
-    .map(([id, v]) => [id, v?.effortLevel]);
-  const notHigh = efforts.filter(([, e]) => e !== "high");
-  if (efforts.length === 0) problems.push("no saved effort for Opus or Fable (Opus 5.5 starts at medium)");
-  for (const [id, e] of notHigh) problems.push(`${id} effort is ${e || "unset"}`);
-  const fix = ['"model": "opus" in ~/.claude/settings.json', "in a session on each new Opus or Fable: /effort high, then Enter"];
-  if (env.CLAUDE_CODE_EFFORT_LEVEL) {
-    problems.push(`CLAUDE_CODE_EFFORT_LEVEL=${env.CLAUDE_CODE_EFFORT_LEVEL} overrides every saved effort`);
+  if (problems.length) fixes.push(`"model": "opus" in ${settingsFile}`);
+  const saved = (id) => settings?.modelSettings?.[id]?.effortLevel;
+  const envEffort = env.CLAUDE_CODE_EFFORT_LEVEL;
+  const effortFix = "on each new Opus or Fable, in a session: /effort high, then Enter (saves it for that model)";
+  if (envEffort && envEffort !== "high") {
+    problems.push(`CLAUDE_CODE_EFFORT_LEVEL=${envEffort} overrides every saved effort`);
+    fixes.push("unset CLAUDE_CODE_EFFORT_LEVEL, or set it to high");
   }
-  const summary = [model ? `model ${model}` : null, ...efforts.map(([id, e]) => `${id} ${e || "unset"}`)].filter(Boolean).join("; ");
-  return problems.length
-    ? { status: "warn", summary: problems.join("; "), fix: fix.join("; ") }
-    : { status: "ok", summary: `${summary} (the alias tracks the newest Opus)` };
+  if (!envEffort) {
+    if (!runningModel) {
+      problems.push("effort of the running model not verified");
+      fixes.push("run /codex-broker:setup, or re-run with --claude-model <the session's model id>");
+    } else if (!/^claude-(opus|fable)-/.test(runningModel)) {
+      problems.push(`this session runs ${runningModel}; the orchestrator should be the newest Opus (or Fable for rulings)`);
+      fixes.push("/model opus in Claude Code, or the app's model picker");
+    } else if (saved(runningModel) !== "high") {
+      problems.push(`${runningModel} effort is ${saved(runningModel) || "unset, so it runs at its own default"}`);
+      fixes.push(effortFix);
+    }
+  }
+  const fix = fixes.join("; ");
+  const summary = [
+    model ? `model ${model}` : null,
+    runningModel ? `${runningModel} effort ${envEffort ? `${envEffort} (env)` : saved(runningModel) || "unset"}` : null,
+  ]
+    .filter(Boolean)
+    .join("; ");
+  return problems.length ? { status: "warn", summary: problems.join("; "), fix } : { status: "ok", summary: `${summary} (the alias tracks the newest Opus)` };
 }
 
-// Codex's executor should be the top model of Codex's own catalog
-// (~/.codex/models_cache.json: lower `priority` = ranked higher). Also checks
-// the configured effort is one the model supports, and flags a model that
-// Codex has scheduled for retirement.
-export function codexModelVerdict({ model, effort }, catalog) {
-  const listed = (catalog?.models || []).filter((m) => m.visibility === "list" && m.supported_in_api !== false);
-  if (listed.length === 0) {
-    return { status: "warn", summary: "Codex's model catalog isn't cached yet", fix: "run any codex command once, then re-run this check" };
+// The executor's required default effort (skill/SKILL.md; configure-codex).
+export const EXECUTOR_EFFORT = "ultra";
+
+// Rank Codex's catalog (~/.codex/models_cache.json). Only models Codex lists,
+// that the API supports, and that carry a numeric priority can be ranked; lower
+// priority = ranked higher; ties share a rank.
+export function rankCatalog(catalog) {
+  return (catalog?.models || [])
+    .filter((m) => m && m.visibility === "list" && m.supported_in_api !== false && Number.isFinite(m.priority) && m.slug)
+    .sort((a, b) => a.priority - b.priority || a.slug.localeCompare(b.slug));
+}
+
+// Codex's executor should be the top of the catalog at `ultra` by default. The
+// model the broker actually uses is CODEX_MODEL when set (resolveModel in
+// server/lib/util.mjs), else config.toml. The relief executor is the next-ranked
+// model after the executor; it is reported so it is never hardcoded.
+export function codexModelVerdict({ model, effort, envModel = null }, catalog) {
+  const ranked = rankCatalog(catalog);
+  if (ranked.length === 0) {
+    return { status: "warn", summary: "Codex's model catalog isn't cached, or no model in it can be ranked", fix: "run any codex command once, then re-run this check" };
   }
-  const top = [...listed].sort((a, b) => a.priority - b.priority)[0];
-  if (!model) {
-    return { status: "warn", summary: `no model in config.toml; the newest is ${top.slug}`, fix: `node scripts/configure-codex.mjs --model ${top.slug} --effort ultra` };
-  }
-  const mine = (catalog.models || []).find((m) => m.slug === model);
-  if (!mine) {
-    return { status: "warn", summary: `${model} is not in Codex's catalog (misspelled or retired); the newest is ${top.slug}`, fix: `node scripts/configure-codex.mjs --model ${top.slug} --effort ultra` };
-  }
+  const tops = ranked.filter((m) => m.priority === ranked[0].priority);
+  const topSlug = tops[0].slug;
+  const switchFix = `node scripts/configure-codex.mjs --model ${topSlug} --effort ${EXECUTOR_EFFORT} (tell the user; never switch silently)`;
   const problems = [];
-  if (mine.slug !== top.slug && mine.priority > top.priority) problems.push(`newer model available: ${top.slug} (${top.display_name || top.slug})`);
-  const levels = (mine.supported_reasoning_levels || []).map((l) => l.effort);
-  if (effort && levels.length && !levels.includes(effort)) problems.push(`effort "${effort}" isn't supported by ${model} (${levels.join(", ")})`);
-  if (mine.upgrade?.retirement_at) problems.push(`${model} retires ${mine.upgrade.retirement_at.slice(0, 10)}`);
+  const effective = envModel || model;
+  if (envModel) problems.push(`CODEX_MODEL=${envModel} overrides config.toml for delegations without an explicit model`);
+  if (!effective) {
+    return { status: "warn", summary: `no model in config.toml; the newest is ${topSlug}`, fix: switchFix };
+  }
+  const mine = ranked.find((m) => m.slug === effective);
+  if (!mine) {
+    const known = (catalog.models || []).find((m) => m.slug === effective);
+    const why = known ? "is hidden, unsupported in the API, or unranked in Codex's catalog" : "is not in Codex's catalog (misspelled or retired)";
+    return { status: "warn", summary: `${effective} ${why}; the newest is ${topSlug}`, fix: switchFix };
+  }
+  if (!tops.includes(mine)) problems.push(`newer model available: ${topSlug} (${tops[0].display_name || topSlug})`);
+  const levels = (mine.supported_reasoning_levels || []).map((l) => l?.effort).filter(Boolean);
+  if (!effort) problems.push(`no default effort in config.toml; the hierarchy's default is ${EXECUTOR_EFFORT}`);
+  else if (effort !== EXECUTOR_EFFORT) problems.push(`default effort is ${effort}; the hierarchy's default is ${EXECUTOR_EFFORT}`);
+  if (levels.length === 0) problems.push(`the catalog lists no effort levels for ${effective}, so ${effort || EXECUTOR_EFFORT} can't be verified`);
+  else if (effort && !levels.includes(effort)) problems.push(`effort "${effort}" isn't supported by ${effective} (${levels.join(", ")})`);
+  if (mine.upgrade?.retirement_at) problems.push(`${effective} retires ${String(mine.upgrade.retirement_at).slice(0, 10)}`);
+  const relief = ranked.find((m) => m.slug !== mine.slug)?.slug || null;
+  const reliefNote = relief ? `; relief: ${relief}` : "";
   return problems.length
-    ? { status: "warn", summary: problems.join("; "), fix: `node scripts/configure-codex.mjs --model ${top.slug} --effort ultra (tell the user; never switch silently)` }
-    : { status: "ok", summary: `${model} at ${effort || "its default effort"} is the newest in Codex's catalog` };
+    ? { status: "warn", summary: problems.join("; ") + reliefNote, fix: switchFix, relief }
+    : { status: "ok", summary: `${effective} at ${effort} is the newest in Codex's catalog${reliefNote}`, relief };
+}
+
+// The value of a top-level string key in TOML: only lines before the first
+// [table], a basic "..." or literal '...' string, trailing comment allowed.
+export function tomlTopLevelString(text, key) {
+  for (const raw of String(text || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith("[")) break;
+    const m = new RegExp(`^${key}\\s*=\\s*(?:"((?:[^"\\\\]|\\\\.)*)"|'([^']*)')\\s*(?:#.*)?$`).exec(line);
+    if (m) return m[1] !== undefined ? m[1].replace(/\\(.)/g, "$1") : m[2];
+  }
+  return null;
 }
 
 // Required checks fail the run; optional ones only warn.
@@ -259,18 +313,31 @@ function readJsonOr(file, fallback) {
   }
 }
 
-function checkClaudeModel() {
+function checkClaudeModel(runningModel) {
+  // Claude Code reads settings from CLAUDE_CONFIG_DIR when set.
   const dir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
-  return { id: "claude-model", ...claudeModelVerdict(readJsonOr(path.join(dir, "settings.json"), {}), process.env) };
+  const file = path.join(dir, "settings.json");
+  let settings = {};
+  if (fs.existsSync(file)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (e) {
+      return { id: "claude-model", status: "warn", summary: `${file} isn't valid JSON (${e.message}); Claude Code may be ignoring it`, fix: `fix the JSON in ${file}` };
+    }
+  }
+  return { id: "claude-model", ...claudeModelVerdict(settings, process.env, { runningModel, settingsFile: file }) };
 }
 
 function checkCodexModel() {
   const file = configPath();
   const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-  const quoted = (line) => /"([^"]*)"/.exec(line || "")?.[1] || null;
-  const r = codexConfigReport(text);
   const catalog = readJsonOr(path.join(path.dirname(file), "models_cache.json"), null);
-  return { id: "codex-model", ...codexModelVerdict({ model: quoted(r.model), effort: quoted(r.effort) }, catalog) };
+  const envModel = (process.env.CODEX_MODEL || "").trim() || null;
+  const verdict = codexModelVerdict(
+    { model: tomlTopLevelString(text, "model"), effort: tomlTopLevelString(text, "model_reasoning_effort"), envModel },
+    catalog
+  );
+  return { id: "codex-model", ...verdict };
 }
 
 function checkGit() {
@@ -311,19 +378,24 @@ function checkSkill(viaPlugin) {
     : { id: "skill", status: "warn", summary: "~/.claude/skills/codex-delegation differs from this checkout", fix: "copy skill/ over it again (skill and broker version together)" };
 }
 
-export function runChecks({ viaPlugin = false } = {}) {
+export function runChecks({ viaPlugin = false, claudeModel = null } = {}) {
   const results = [checkNode(), checkServerDeps(viaPlugin)];
   const { codex, bin } = checkCodex();
   results.push(codex);
   if (bin && codex.status !== "fail") results.push(checkLogin(bin), checkSandbox(bin));
-  results.push(checkCodexConfig(), checkCodexModel(), checkClaudeModel(), checkGit(), checkGh(), checkSkill(viaPlugin));
+  results.push(checkCodexConfig(), checkCodexModel(), checkClaudeModel(claudeModel), checkGit(), checkGh(), checkSkill(viaPlugin));
   return results;
 }
 
 function main() {
   const json = process.argv.includes("--json");
   // --plugin: run from the plugin's setup skill, which supplies the skill itself.
-  const results = runChecks({ viaPlugin: process.argv.includes("--plugin") });
+  // --claude-model <id>: the running session's model id, so its saved effort
+  // can be checked (the doctor can't resolve what the `opus` alias points to).
+  const argv = process.argv.slice(2);
+  const at = argv.indexOf("--claude-model");
+  const claudeModel = at >= 0 ? argv[at + 1] || null : null;
+  const results = runChecks({ viaPlugin: argv.includes("--plugin"), claudeModel });
   if (json) {
     console.log(JSON.stringify({ ok: exitCode(results) === 0, results }, null, 2));
   } else {

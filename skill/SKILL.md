@@ -38,7 +38,7 @@ The version in brackets is what that means as of the last amendment.
 | Claude Fable, latest (Fable 5.1) | Overlord | Normative rulings, contract changes, phase-boundary review, final accountability. Verdict outranks everything. Writes code only with the user's per-task permission (Fable-coding gate below). | High | Boundaries and rulings. Never routine execution. |
 | Claude Opus, latest (Opus 5.5) | Default orchestrator | Runs sessions: scopes tasks, writes delegation prompts, runs the gates, merges. | High | Every ordinary execution session. Contract questions go to Fable. |
 | Codex catalog's top model (GPT-6 Astra) | Executor and adversarial reviewer | Attacks the orchestrator's plans before build. Implements bounded tasks. Reviews Claude-authored code. | `ultra` for reviews and batches; `max` for scoped implementation, via per-call `reasoning_effort` | Default for every delegation. |
-| Codex catalog's workhorse model (GPT-6 Sol) | Relief executor | Bounded mechanical implementation when Astra quota is short. Fallback if Astra access lapses. Lint-grade second pass on Astra diffs. | `max` | Per-call `model: "gpt-6-sol"` only. Never the global default while Astra is available. Never long-horizon work until it has been evaluated here. |
+| Codex catalog's next-ranked model (GPT-6 Sol) | Relief executor | Bounded mechanical implementation when Astra quota is short. Fallback if Astra access lapses. Lint-grade second pass on Astra diffs. | `max` | Per-call `model` only: the relief model the doctor names (`gpt-6-sol` as of 2026-09-27). Never the global default while Astra is available. Never long-horizon work until it has been evaluated here. |
 | GPT-6 Luna, and the GPT-5.x line | Unassigned | Still in the Codex catalog; the catalog itself calls the 5.x models "older", and GPT-5.5 retires 2026-10-14. | n/a | Do not use. |
 
 Why this shape (published results, 2026-09): on Terminal-Bench 4.0 Astra
@@ -59,30 +59,46 @@ to `xhigh` or `max` for a single hard review with `/effort`, then go back.
 ## Check the models first
 
 Do this once per session, before the first delegation. It costs one look and
-catches the case where a stale model quietly runs the loop.
+catches a stale model quietly running the loop. It never blocks for more than
+one question: when something can't be verified, say so, ask once, and proceed
+on the user's answer.
 
-1. **Your own model.** Your system prompt or environment names the model you
-   are running as, and usually the newest models of each family.
+1. **Your own model.** Your system prompt or environment usually names your
+   exact model and the newest model of each family.
    - The newest Opus: you are the orchestrator. Proceed.
    - The newest Fable: the Fable rules below apply, including the coding gate.
    - Anything else (Sonnet, Haiku, or an older Opus or Fable): tell the user
-     before orchestrating, and suggest `/model opus` (or `/model fable`). The
-     aliases always resolve to the newest model; a full model id stays pinned.
-     Continue only if they say so.
-2. **Your effort (Claude Code).** Effort is saved per model id in
-   `~/.claude/settings.json` under `modelSettings.<your model id>.effortLevel`,
-   and each new model starts at its own default (Opus 5.5 starts at medium);
-   a top-level `effortLevel` no longer applies from Opus 5.5 on. If yours is
-   not `high`, ask the user to run `/effort high` and press Enter to save it for
-   this model. A `CLAUDE_CODE_EFFORT_LEVEL` environment variable overrides all
-   of this; mention it if set. Outside Claude Code (Desktop chat, Cowork) you
-   cannot see effort; skip this step.
-3. **Codex's model.** The executor is `model` in `~/.codex/config.toml`; the
-   newest model is the top of Codex's own catalog. Where you can run commands,
-   `node scripts/doctor.mjs` in the broker checkout (or `/codex-broker:setup`
-   with the plugin) reports both as `codex-model`. If a newer model exists, tell
-   the user; switching is `node scripts/configure-codex.mjs --model <id>
-   --effort ultra`. Never switch it silently.
+     before orchestrating how to switch, for the host you're in. Claude Code:
+     `/model opus` (or `/model fable`); the aliases always resolve to the newest
+     model, a full model id stays pinned. Desktop chat and Cowork: the app's
+     model picker. Continue only if they say so.
+   - Can't tell your exact model, or whether it's the newest: say which model
+     you believe you are, ask the user to confirm it in the picker, and proceed
+     on their answer.
+2. **Your effort (Claude Code only).** Effort is saved per model id under
+   `modelSettings.<your model id>.effortLevel` in the active settings file:
+   `$CLAUDE_CONFIG_DIR/settings.json` when that variable is set, otherwise
+   `~/.claude/settings.json`. Each new model starts at its own default (Opus
+   5.5 starts at medium), and a top-level `effortLevel` no longer applies from
+   Opus 5.5 on. On the broker's own machine, `node scripts/doctor.mjs
+   --claude-model <your model id>` checks exactly this. If yours is not `high`,
+   ask the user to run `/effort high` and press Enter, which saves it for this
+   model. A `CLAUDE_CODE_EFFORT_LEVEL` environment variable overrides every
+   saved level; mention it if set to anything but `high`. Desktop chat and
+   Cowork don't expose effort; skip this step there.
+3. **Codex's model and the relief model.** Both live on the machine that runs
+   the broker and Codex, so check there: `node scripts/doctor.mjs` in the broker
+   checkout, or `/codex-broker:setup` with the plugin. Its `codex-model` line
+   compares the executor (`CODEX_MODEL` if set, else `model` in
+   `~/.codex/config.toml`) with the top of Codex's own catalog, checks the
+   default effort is `ultra`, and names the relief model (the next-ranked model
+   after the executor). Same-host session: run it yourself. Cloud container or
+   Desktop chat: don't run it where you are (it would read the wrong machine);
+   ask the user for its output, or note the executor as unverified and go on.
+   If a newer model exists, tell the user; switching is `node
+   scripts/configure-codex.mjs --model <id> --effort ultra`. Never switch it
+   silently. For relief work, use the relief model the doctor names; if it
+   isn't `gpt-6-sol`, tell the user before the first relief delegation.
 
 - **Fable (the latest Claude Fable) — supreme overlord.** Reserved for the moments only it
   can serve: phase-boundary reviews, contract amendments and freezes, finding
@@ -130,8 +146,9 @@ catches the case where a stale model quietly runs the loop.
   `node scripts/configure-codex.mjs --model <id> --effort ultra` (backs up
   first). Leave `model` unset in delegation calls so the config.toml default
   wins; hardcoding a model name anywhere else is how the default drifts.
-- **GPT-6 Sol — relief executor** (`model: "gpt-6-sol"`; replaced GPT-5.6 Sol
-  on 2026-09-27). Reached only through the per-call `model`
+- **GPT-6 Sol — relief executor** (the Codex catalog's next-ranked model after
+  the executor, as the doctor reports it; `gpt-6-sol` as of 2026-09-27, when it
+  replaced GPT-5.6 Sol). Reached only through the per-call `model`
   parameter. Use it for bounded mechanical work when Astra quota is short, as
   the fallback if Astra access lapses (roll the global default back with the
   same configure command), and for a lint-grade second pass on Astra diffs

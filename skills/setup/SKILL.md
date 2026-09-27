@@ -9,8 +9,10 @@ disable-model-invocation: true
 Run the broker's preflight and report what it finds:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/doctor.mjs" --plugin
+node "${CLAUDE_PLUGIN_ROOT}/scripts/doctor.mjs" --plugin --claude-model <your model id>
 ```
+
+Replace `<your model id>` with the exact model id your system prompt gives you (for example `claude-opus-5-5`), so the doctor can check the effort saved for the model actually running. If you don't know your exact id, leave the flag out; the doctor then reports that effort as unverified.
 
 It prints one line per check (`OK`, `WARN`, `FAIL`) with a `fix:` line under each problem, and exits 1 if anything required fails. Show the user the result as a short list, then handle each problem as below. Rerun the command after fixes until it prints `Ready.`
 
@@ -24,7 +26,8 @@ It prints one line per check (`OK`, `WARN`, `FAIL`) with a `fix:` line under eac
   `& "$env:APPDATA\npm\codex.cmd" sandbox setup --elevated --current-user`
   Never run it for them; it creates local accounts and firewall rules.
 - **codex-model** warns: Codex's catalog has a newer model than the configured executor, the configured effort isn't supported, or the model is due to retire. Tell the user what the doctor found and offer `node "${CLAUDE_PLUGIN_ROOT}/scripts/configure-codex.mjs" --model <newest> --effort ultra`. Never switch the executor without saying so.
-- **claude-model** warns: the orchestrator should be the newest Opus at High effort. Offer to set `"model": "opus"` in `~/.claude/settings.json` (the alias tracks the newest Opus; a full id stays pinned). Effort is saved per model: on each new Opus or Fable the user runs `/effort high` and presses Enter. Ask before editing their settings.
+- **claude-model** warns: the orchestrator should be the newest Opus at High effort. Offer to set `"model": "opus"` in the settings file the doctor names (`$CLAUDE_CONFIG_DIR/settings.json` when that variable is set, else `~/.claude/settings.json`); the alias tracks the newest Opus, a full id stays pinned. Effort is saved per model: on each new Opus or Fable the user runs `/effort high` and presses Enter. Ask before editing their settings.
+- **codex-model** names a relief model (`relief: <id>`): that is the model to pass as `model` for relief delegations. If it isn't `gpt-6-sol`, mention it.
 - **codex-config** warns: offer `node "${CLAUDE_PLUGIN_ROOT}/scripts/configure-codex.mjs" --model gpt-6-astra --effort ultra`. It backs up `~/.codex/config.toml` first and turns on keep-awake, so a sleeping laptop does not kill long jobs.
 - **git** fails: `winget install Git.Git` (ask first).
 - **gh** warns: optional; only the `gh_*` tools need it. `winget install GitHub.cli`, then the user runs `gh auth login`.

@@ -23,6 +23,7 @@ import {
   MIN_CODEX,
   parseVersion,
   sandboxVerdict,
+  tomlTopLevelString,
   versionAtLeast,
 } from "../../scripts/doctor.mjs";
 import {
@@ -353,22 +354,29 @@ async function main() {
   });
 
   await test("doctor keeps the orchestrator on the newest Opus at High effort", async () => {
+    const run = { runningModel: "claude-opus-5-5" };
     const good = { model: "opus", modelSettings: { "claude-opus-5-5": { effortLevel: "high" }, "claude-fable-5-1": { effortLevel: "high" } } };
-    assert(claudeModelVerdict(good, {}).status === "ok", `alias + high efforts should pass: ${JSON.stringify(claudeModelVerdict(good, {}))}`);
+    const ok = claudeModelVerdict(good, {}, run);
+    assert(ok.status === "ok", `alias + High on the running model should pass: ${JSON.stringify(ok)}`);
     const cases = [
-      [{}, /no default model/],
-      [{ ...good, model: "claude-opus-5-5" }, /pinned/],
-      [{ ...good, model: "sonnet" }, /should be Opus/],
-      [{ model: "opus" }, /no saved effort/],
-      [{ ...good, modelSettings: { "claude-opus-5-5": { effortLevel: "medium" } } }, /claude-opus-5-5 effort is medium/],
-      [{ ...good, modelSettings: { "claude-opus-5-5": {} } }, /claude-opus-5-5 effort is unset/],
+      [{}, {}, run, /no default model/],
+      [{ ...good, model: "claude-opus-5-5" }, {}, run, /pinned/],
+      [{ ...good, model: "sonnet" }, {}, run, /should be Opus/],
+      // The upgrade case: High saved only for Fable / an older Opus, none for the Opus actually running.
+      [{ model: "opus", modelSettings: { "claude-fable-5-1": { effortLevel: "high" }, "claude-opus-5": { effortLevel: "high" } } }, {}, run, /claude-opus-5-5 effort is unset/],
+      [{ ...good, modelSettings: { "claude-opus-5-5": { effortLevel: "medium" } } }, {}, run, /claude-opus-5-5 effort is medium/],
+      // No running model id: effort can't be verified, so it must not pass.
+      [good, {}, {}, /not verified/],
+      [good, {}, { runningModel: "claude-sonnet-5" }, /should be the newest Opus/],
+      [good, { CLAUDE_CODE_EFFORT_LEVEL: "low" }, run, /CLAUDE_CODE_EFFORT_LEVEL=low overrides/],
     ];
-    for (const [settings, re] of cases) {
-      const v = claudeModelVerdict(settings, {});
-      assert(v.status === "warn" && re.test(v.summary), `${JSON.stringify(settings)} -> ${JSON.stringify(v)}`);
+    for (const [settings, env, opts, re] of cases) {
+      const v = claudeModelVerdict(settings, env, opts);
+      assert(v.status === "warn" && re.test(v.summary), `${JSON.stringify({ settings, env, opts })} -> ${JSON.stringify(v)}`);
     }
-    const env = claudeModelVerdict(good, { CLAUDE_CODE_EFFORT_LEVEL: "low" });
-    assert(env.status === "warn" && /overrides every saved effort/.test(env.summary), `env override must be reported: ${JSON.stringify(env)}`);
+    assert(claudeModelVerdict(good, { CLAUDE_CODE_EFFORT_LEVEL: "high" }, {}).status === "ok", "an env override of high satisfies the effort rule");
+    const custom = claudeModelVerdict({}, {}, { ...run, settingsFile: "D:/cfg/settings.json" });
+    assert(custom.fix.includes("D:/cfg/settings.json"), `fix must name the active settings file: ${custom.fix}`);
   });
 
   await test("doctor compares Codex's configured model with the top of Codex's own catalog", async () => {
@@ -381,14 +389,39 @@ async function main() {
         { slug: "gpt-5.5", priority: 12, visibility: "list", supported_in_api: true, supported_reasoning_levels: lv("low", "xhigh"), upgrade: { retirement_at: "2026-10-14T19:00:00Z" } },
       ],
     };
-    assert(codexModelVerdict({ model: "gpt-6-astra", effort: "ultra" }, catalog).status === "ok", "top model at a supported effort should pass (hidden models don't count)");
-    const older = codexModelVerdict({ model: "gpt-6-sol", effort: "ultra" }, catalog);
-    assert(older.status === "warn" && /newer model available: gpt-6-astra/.test(older.summary), `older model: ${JSON.stringify(older)}`);
-    const retiring = codexModelVerdict({ model: "gpt-5.5", effort: "ultra" }, catalog);
-    assert(/retires 2026-10-14/.test(retiring.summary) && /effort "ultra" isn't supported/.test(retiring.summary), `retiring + effort: ${JSON.stringify(retiring)}`);
-    assert(/not in Codex's catalog/.test(codexModelVerdict({ model: "gpt-typo" }, catalog).summary), "unknown model");
-    assert(/no model in config.toml/.test(codexModelVerdict({ model: null }, catalog).summary), "unset model");
-    assert(codexModelVerdict({ model: "gpt-6-astra" }, null).status === "warn", "missing catalog warns");
+    const top = codexModelVerdict({ model: "gpt-6-astra", effort: "ultra" }, catalog);
+    assert(top.status === "ok" && top.relief === "gpt-6-sol", `top model at ultra should pass and name the relief model: ${JSON.stringify(top)}`);
+    const warns = [
+      [{ model: "gpt-6-sol", effort: "ultra" }, /newer model available: gpt-6-astra/],
+      [{ model: "gpt-hidden", effort: "low" }, /hidden, unsupported in the API, or unranked/],
+      [{ model: "gpt-6-astra", effort: "low" }, /default effort is low; the hierarchy's default is ultra/],
+      [{ model: "gpt-6-astra", effort: null }, /no default effort/],
+      [{ model: "gpt-6-astra", effort: "ultra", envModel: "gpt-6-sol" }, /CODEX_MODEL=gpt-6-sol overrides.*newer model available/],
+      [{ model: "gpt-5.5", effort: "ultra" }, /effort "ultra" isn't supported.*retires 2026-10-14/],
+      [{ model: "gpt-typo", effort: "ultra" }, /not in Codex's catalog/],
+      [{ model: null, effort: "ultra" }, /no model in config.toml/],
+    ];
+    for (const [cfg, re] of warns) {
+      const v = codexModelVerdict(cfg, catalog);
+      assert(v.status === "warn" && re.test(v.summary), `${JSON.stringify(cfg)} -> ${JSON.stringify(v)}`);
+    }
+    // Unranked or unsupported entries can't win the ranking or pass as the executor.
+    const messy = { models: [
+      { slug: "gpt-unranked", visibility: "list", supported_in_api: true, supported_reasoning_levels: lv("ultra") },
+      { slug: "gpt-noapi", priority: 0, visibility: "list", supported_in_api: false, supported_reasoning_levels: lv("ultra") },
+      { slug: "gpt-old", priority: 12, visibility: "list", supported_in_api: true, supported_reasoning_levels: lv("ultra") },
+      { slug: "gpt-new", priority: 1, visibility: "list", supported_in_api: true, supported_reasoning_levels: lv("ultra") },
+    ] };
+    assert(/newer model available: gpt-new/.test(codexModelVerdict({ model: "gpt-old", effort: "ultra" }, messy).summary), "a missing priority must not poison the ranking");
+    assert(codexModelVerdict({ model: "gpt-unranked", effort: "ultra" }, messy).status === "warn", "an unranked configured model must not pass");
+    assert(codexModelVerdict({ model: "gpt-noapi", effort: "ultra" }, messy).status === "warn", "an API-unsupported configured model must not pass");
+    assert(codexModelVerdict({ model: "gpt-6-astra", effort: "ultra" }, { models: [{ ...catalog.models[1], supported_reasoning_levels: [] }] }).status === "warn", "missing effort data must not verify");
+    assert(codexModelVerdict({ model: "gpt-6-astra", effort: "ultra" }, null).status === "warn", "missing catalog warns");
+    // config.toml is read as TOML: top-level keys only, comments ignored, both string forms.
+    assert(tomlTopLevelString(`model = 'gpt-6-sol' # change to "gpt-6-astra" later`, "model") === "gpt-6-sol", "a comment must not supply the value");
+    assert(tomlTopLevelString(`model_reasoning_effort = "ultra"\nmodel = "gpt-6-astra"`, "model") === "gpt-6-astra", "basic string, key order");
+    assert(tomlTopLevelString(`[profiles.fast]\nmodel = "gpt-6-luna"`, "model") === null, "a table-scoped key is not the top-level model");
+    assert(tomlTopLevelString(`# model = "x"\nmodel="gpt-6-astra"`, "model") === "gpt-6-astra", "commented-out line ignored");
   });
 
   await runWindowsResolutionTests();
