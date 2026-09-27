@@ -1,6 +1,6 @@
 # Windows Install Guide
 
-Target: ~20 minutes to a working setup where any Cowork session can delegate coding tasks to Codex on your machine. All commands run in regular PowerShell (Win key → type `powershell` → Enter). No administrator mode needed.
+Target: ~20 minutes to a working setup where any Cowork session can delegate coding tasks to Codex on your machine. All commands run in regular PowerShell (Win key → type `powershell` → Enter), except the one-time Codex sandbox setup in step 1.3, which needs an administrator PowerShell.
 
 ```mermaid
 flowchart TD
@@ -26,13 +26,21 @@ flowchart TD
 
   Sign in with your ChatGPT account (any plan) or API key.
 
-- [ ] **1.3** Health check:
+- [ ] **1.3** Set up Codex's sandbox (once per machine). Codex runs its commands as dedicated sandbox users, and creating them needs administrator rights. Start menu → type `PowerShell` → right-click **Windows PowerShell** → **Run as administrator**, then:
+
+  ```powershell
+  & "$env:APPDATA\npm\codex.cmd" sandbox setup --elevated --current-user
+  ```
+
+  Close the administrator window when it finishes; nothing else should run elevated. Skip this and Codex still answers prompts, but every command it tries fails with "blocked by policy" ([LESSONS #11](LESSONS.md)).
+
+- [ ] **1.4** Health check, back in regular PowerShell:
 
   ```powershell
   codex doctor
   ```
 
-  Confirm the **sandbox** section reports restricted filesystem and network. If it reports no enforcement, run reviews only — don't give write delegations.
+  The **sandbox** section should read `restricted fs + restricted network`, with `sandbox backend  elevated` and `sandbox provisioning  complete`. If it doesn't, redo 1.3; don't give Codex work until it does.
 
 ## Phase 2 — GitHub CLI
 

@@ -18,9 +18,10 @@ Then tell Claude Code:
 Claude Code reads `CLAUDE.md`, checks prerequisites (Node ≥ 18.18, Codex CLI,
 git), runs `npm ci --prefix server`, installs the `codex-delegation` skill to
 `~/.claude/skills/`, configures the Codex CLI (`scripts/configure-codex.mjs`:
-keep-awake plus model and effort defaults), runs the test suite, and walks you through the one step
+keep-awake plus model and effort defaults), runs the test suite, and walks you through the two steps
 it cannot do for you: `codex login` (interactive, bills to your ChatGPT plan or
-API key).
+API key) and, on Windows, the one-time Codex sandbox setup from an
+administrator PowerShell.
 
 The repo ships a project-scoped `.mcp.json`, so when you open Claude Code
 inside this repo it will ask to enable the `codex-broker` server — approve it
@@ -37,7 +38,10 @@ A literal absolute path also works when registering from outside the clone.
 
 1. Prerequisites: Node ≥ 18.18, Codex CLI ≥ 0.153.1
    (`npm install -g @openai/codex@latest`, then `codex login`), git; optionally
-   the GitHub CLI (`gh auth login`), which only the `gh_*` tools need.
+   the GitHub CLI (`gh auth login`), which only the `gh_*` tools need. On
+   Windows, set up Codex's sandbox once from an administrator PowerShell:
+   `& "$env:APPDATA\npm\codex.cmd" sandbox setup --elevated --current-user`
+   (`codex doctor` should then show `sandbox backend elevated`).
 2. `npm ci --prefix server` from the repo root.
 3. Register the server (project scope comes free via `.mcp.json`; user scope
    via the `claude mcp add` command above).
@@ -47,7 +51,8 @@ A literal absolute path also works when registering from outside the clone.
    alone; `--verify` reports the current state without writing.
 6. Verify: `cd server && node test/run-tests.mjs` → `0 failed`. Restart Claude Code,
    confirm the tools are listed, then run a `codex_task` smoke test
-   ("Reply with exactly: READY").
+   ("Reply with exactly: READY") and a read-only one that runs `git --version`.
+   READY alone doesn't show that Codex can run commands.
 
 ## Path C — you already run the broker in Claude Desktop / Cowork
 

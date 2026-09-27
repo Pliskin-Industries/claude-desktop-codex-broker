@@ -23,6 +23,15 @@ failure rather than improvising around it.
      attempt to log in for them.
    - `git --version` → required. `gh --version` is optional (only needed for
      `gh_repo_create`); if missing, note it and continue.
+   - Windows only: the Codex sandbox must be provisioned. `codex doctor` →
+     the sandbox section must show `sandbox backend  elevated` and
+     `sandbox provisioning  complete`. If not, the USER runs, once, from an
+     administrator PowerShell (use the `.cmd` shim; execution policy may block
+     `codex.ps1`):
+     `& "$env:APPDATA\npm\codex.cmd" sandbox setup --elevated --current-user`
+     then closes that window. Do not run it for them. Without it every shell
+     command Codex tries is "blocked by policy" while the READY smoke test
+     still passes (docs/LESSONS.md #11).
 
 2. **Install server dependencies.** From the repo root:
    `npm ci --prefix server`
@@ -64,6 +73,11 @@ failure rather than improvising around it.
    - Smoke test: `codex_task` with prompt "Reply with exactly: READY" and
      `cwd` set to any existing directory. Expect READY. This confirms the
      real Codex CLI resolves and authenticates.
+   - Command test: `codex_task`, `sandbox: "read-only"`, `cwd` = the repo root,
+     prompt "Run this shell command and reply with only its output, or the
+     exact error: git --version". Expect a git version line. "blocked by
+     policy" means the Windows sandbox is not provisioned (step 1). READY
+     alone does not prove Codex can run commands.
    - If the spawn fails on Windows with ENOENT/EINVAL, the npm `codex.cmd`
      shim was found instead of the real binary — set the `CODEX_BIN` env var
      to the vendored `codex.exe` path (see docs/LESSONS.md #2).

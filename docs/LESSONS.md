@@ -88,6 +88,16 @@ Real defects found and fixed while bringing this system up on a Windows 11 machi
 
 **Diagnostic rule:** "I restarted it" is a claim about process start times. Compare `CreationDate` on the `Claude.exe` processes with the time of the install or `git pull` before debugging anything else.
 
+## 11. READY passes, but Codex can't run a single command
+
+**Symptom:** on a fresh machine the smoke test (`codex_task`, "Reply with exactly: READY") passed through both the Claude Code server and the Desktop extension. The first real job, a read-only review, came back "Review blocked: the execution policy rejected read-only file access", and its log showed every command (`git status`, `Get-Content`) as `exec_command failed: ... rejected: blocked by policy`. `workspace-write` failed the same way.
+
+**Cause:** Codex on Windows runs model commands inside its own sandbox, which is backed by dedicated local accounts (`CodexSandboxOffline`, `CodexSandboxOnline`). Nobody had provisioned it, and `~/.codex/config.toml` had no `[windows]` section, so Codex could not sandbox anything and, with no human to approve an unsandboxed command in `exec` mode, refused them all. Answering READY needs no command, so the smoke test could not see it. A one-off `-c 'windows.sandbox="unelevated"'` made the same read succeed, which located the problem.
+
+**Fix:** once per machine, from an administrator PowerShell: `& "$env:APPDATA\npm\codex.cmd" sandbox setup --elevated --current-user` (codex-cli 0.157.1). It creates the sandbox accounts and writes `[windows] sandbox = "elevated"`; `codex doctor` then reports `sandbox backend elevated` and `sandbox provisioning complete`. No app restart needed: the broker starts a fresh Codex per job. The setup sequence now includes this step and a second smoke test that makes Codex run `git --version`.
+
+**Diagnostic rule:** a smoke test proves only what it exercises. READY proves the binary resolves and authenticates; it says nothing about the sandbox.
+
 ## Meta-lesson
 
 Every fix above was findable because failures left durable artifacts: per-job directories with `output.log`, `command.json`, `meta.json`, and boot logs. Instrument first, then debug. The silent version of any of these failures would have been a wall. Lesson 9 adds the corollary: the artifacts have to be *read*. Three job logs and the Windows event log held the whole answer while an escalation blamed DNS on the strength of a shell check taken at a different minute.
