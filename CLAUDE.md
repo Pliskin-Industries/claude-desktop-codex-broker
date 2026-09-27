@@ -125,11 +125,17 @@ failure rather than improvising around it.
   `codex_status` / `codex_result` for such jobs automatically; paste that
   block into any escalation before proposing a system change.
 - **Model roles and the Fable-coding gate.** `skill/SKILL.md` carries the
-  standing hierarchy: Fable rules, Opus orchestrates, GPT-6 Astra executes and
-  reviews, GPT-5.6 Sol is the relief executor reached only through the
-  per-call `model` parameter. Fable writes code only with the user's explicit
-  per-task permission, asked before the first edit, so the user can plan Fable
-  context. Doc, config, and one-line edits are not gated.
+  standing hierarchy, by role and always the newest model of each line: the
+  latest Fable rules, the latest Opus orchestrates (both at High effort),
+  Codex's top catalog model (GPT-6 Astra) executes and reviews, and its
+  workhorse model (GPT-6 Sol) is the relief executor reached only through the
+  per-call `model` parameter. The skill checks its own model and effort at the
+  start of a session; `scripts/doctor.mjs` checks the settings (`claude-model`:
+  the `opus` alias and per-model High effort in `~/.claude/settings.json`;
+  `codex-model`: config.toml against Codex's catalog). Fable writes code only
+  with the user's explicit per-task permission, asked before the first edit, so
+  the user can plan Fable context. Doc, config, and one-line edits are not
+  gated.
 - **Per-call effort (v1.7.0).** `codex_task`, `codex_start`, `codex_review`,
   and `codex_resume` accept `reasoning_effort` (low, medium, high, xhigh,
   max, ultra), passed to Codex as a `-c model_reasoning_effort` override for

@@ -16,7 +16,15 @@ import {
 } from "../lib/util.mjs";
 import { buildResumeArgs, buildReviewArgs, buildTaskArgs } from "../lib/codex.mjs";
 import { applyChanges, report as configReport } from "../../scripts/configure-codex.mjs";
-import { exitCode as doctorExit, MIN_CODEX, parseVersion, sandboxVerdict, versionAtLeast } from "../../scripts/doctor.mjs";
+import {
+  claudeModelVerdict,
+  codexModelVerdict,
+  exitCode as doctorExit,
+  MIN_CODEX,
+  parseVersion,
+  sandboxVerdict,
+  versionAtLeast,
+} from "../../scripts/doctor.mjs";
 import {
   ANTHROPIC_PUBLISHER_ID,
   depsHash,
@@ -342,6 +350,45 @@ async function main() {
     assert(sandboxVerdict({ checks: {} }, "win32").status === "fail", "a doctor report without the sandbox check must fail closed");
     assert(sandboxVerdict(null, "linux").status === "ok", "non-Windows skips the check");
     assert(doctorExit([{ status: "ok" }, { status: "warn" }]) === 0 && doctorExit([{ status: "ok" }, { status: "fail" }]) === 1, "exit code");
+  });
+
+  await test("doctor keeps the orchestrator on the newest Opus at High effort", async () => {
+    const good = { model: "opus", modelSettings: { "claude-opus-5-5": { effortLevel: "high" }, "claude-fable-5-1": { effortLevel: "high" } } };
+    assert(claudeModelVerdict(good, {}).status === "ok", `alias + high efforts should pass: ${JSON.stringify(claudeModelVerdict(good, {}))}`);
+    const cases = [
+      [{}, /no default model/],
+      [{ ...good, model: "claude-opus-5-5" }, /pinned/],
+      [{ ...good, model: "sonnet" }, /should be Opus/],
+      [{ model: "opus" }, /no saved effort/],
+      [{ ...good, modelSettings: { "claude-opus-5-5": { effortLevel: "medium" } } }, /claude-opus-5-5 effort is medium/],
+      [{ ...good, modelSettings: { "claude-opus-5-5": {} } }, /claude-opus-5-5 effort is unset/],
+    ];
+    for (const [settings, re] of cases) {
+      const v = claudeModelVerdict(settings, {});
+      assert(v.status === "warn" && re.test(v.summary), `${JSON.stringify(settings)} -> ${JSON.stringify(v)}`);
+    }
+    const env = claudeModelVerdict(good, { CLAUDE_CODE_EFFORT_LEVEL: "low" });
+    assert(env.status === "warn" && /overrides every saved effort/.test(env.summary), `env override must be reported: ${JSON.stringify(env)}`);
+  });
+
+  await test("doctor compares Codex's configured model with the top of Codex's own catalog", async () => {
+    const lv = (...e) => e.map((effort) => ({ effort }));
+    const catalog = {
+      models: [
+        { slug: "gpt-6-sol", display_name: "GPT-6-Sol", priority: 2, visibility: "list", supported_in_api: true, supported_reasoning_levels: lv("low", "max", "ultra") },
+        { slug: "gpt-6-astra", display_name: "GPT-6-Astra", priority: 1, visibility: "list", supported_in_api: true, supported_reasoning_levels: lv("low", "max", "ultra") },
+        { slug: "gpt-hidden", priority: 0, visibility: "hide", supported_in_api: true, supported_reasoning_levels: lv("low") },
+        { slug: "gpt-5.5", priority: 12, visibility: "list", supported_in_api: true, supported_reasoning_levels: lv("low", "xhigh"), upgrade: { retirement_at: "2026-10-14T19:00:00Z" } },
+      ],
+    };
+    assert(codexModelVerdict({ model: "gpt-6-astra", effort: "ultra" }, catalog).status === "ok", "top model at a supported effort should pass (hidden models don't count)");
+    const older = codexModelVerdict({ model: "gpt-6-sol", effort: "ultra" }, catalog);
+    assert(older.status === "warn" && /newer model available: gpt-6-astra/.test(older.summary), `older model: ${JSON.stringify(older)}`);
+    const retiring = codexModelVerdict({ model: "gpt-5.5", effort: "ultra" }, catalog);
+    assert(/retires 2026-10-14/.test(retiring.summary) && /effort "ultra" isn't supported/.test(retiring.summary), `retiring + effort: ${JSON.stringify(retiring)}`);
+    assert(/not in Codex's catalog/.test(codexModelVerdict({ model: "gpt-typo" }, catalog).summary), "unknown model");
+    assert(/no model in config.toml/.test(codexModelVerdict({ model: null }, catalog).summary), "unset model");
+    assert(codexModelVerdict({ model: "gpt-6-astra" }, null).status === "warn", "missing catalog warns");
   });
 
   await runWindowsResolutionTests();

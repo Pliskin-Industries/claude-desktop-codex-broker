@@ -1,6 +1,6 @@
 {
   "name": "codex-broker",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "description": "Delegate scoped coding work from Claude to OpenAI's Codex CLI: an MCP broker (background jobs, reviews, credentialed git/gh outside the Codex sandbox) plus the codex-delegation skill.",
   "author": { "name": "Pliskin Industries", "url": "https://github.com/Pliskin-Industries" },
   "homepage": "https://github.com/Pliskin-Industries/claude-desktop-codex-broker",

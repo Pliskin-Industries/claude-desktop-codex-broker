@@ -1,6 +1,6 @@
 # Claude Desktop Codex Broker
 
-Delegate coding tasks from Claude (Cowork / Claude Desktop / Claude Code) to OpenAI's Codex CLI (GPT-6 Astra by default, GPT-5.6 Sol as the relief executor) — with Claude planning and quality-controlling, Codex implementing, and a hardened broker handling everything the Codex sandbox cannot.
+Delegate coding tasks from Claude (Cowork / Claude Desktop / Claude Code) to OpenAI's Codex CLI (GPT-6 Astra by default, GPT-6 Sol as the relief executor) — with Claude planning and quality-controlling, Codex implementing, and a hardened broker handling everything the Codex sandbox cannot.
 
 Codex usage bills to your ChatGPT plan; orchestration runs on your Claude plan. The two AIs cross-check each other: uncorrelated errors are the point.
 
@@ -14,15 +14,22 @@ flowchart LR
 
 ## Model roles
 
-The delegation skill pins each model to one role (standing hierarchy, ratified 2026-08-06, amended 2026-09-08 for GPT-6 Astra). Full text and rationale: [skill/SKILL.md](skill/SKILL.md#model-hierarchy-standing-ratified-2026-08-06-amended-2026-09-08).
+The delegation skill pins each role to the **newest** model of a line, not to a version number (standing hierarchy, ratified 2026-08-06, amended 2026-09-08 and 2026-09-27). Full text and rationale: [skill/SKILL.md](skill/SKILL.md#model-hierarchy-standing-ratified-2026-08-06-amended-2026-09-08-2026-09-27).
 
 | Model | Tier | Role | Effort | When |
 |---|---|---|---|---|
-| Claude Fable 5.1 | Overlord | Normative rulings, contract changes, phase-boundary review, final accountability. Verdict outranks everything. | n/a | Boundaries and rulings. Never routine execution. |
-| Claude Opus (latest) | Default orchestrator | Runs sessions: scopes tasks, writes delegation prompts, runs the gates, merges. | Max | Every ordinary execution session. Contract questions go to Fable. |
-| GPT-6 Astra (Codex) | Executor and adversarial reviewer | Attacks Fable's plans before build. Implements bounded tasks. Reviews Claude-authored code. | `ultra` for reviews and batches; `max` for scoped implementation, via per-call `reasoning_effort` | Default for every delegation. |
-| GPT-5.6 Sol (Codex) | Relief executor | Bounded mechanical implementation when Astra quota is short. Fallback if Astra access lapses. Lint-grade second pass on Astra diffs. | Max | Per-call `model` override only. Never the global default while Astra is available. Never long-horizon work. |
-| GPT-5.6 Terra, Luna | Unassigned | In the Codex catalog; no role until there is a reason to test them. | n/a | Do not use. |
+| Claude Fable, latest (Fable 5.1) | Overlord | Normative rulings, contract changes, phase-boundary review, final accountability. Verdict outranks everything. | High | Boundaries and rulings. Never routine execution. |
+| Claude Opus, latest (Opus 5.5) | Default orchestrator | Runs sessions: scopes tasks, writes delegation prompts, runs the gates, merges. | High | Every ordinary execution session. Contract questions go to Fable. |
+| Codex catalog's top model (GPT-6 Astra) | Executor and adversarial reviewer | Attacks the orchestrator's plans before build. Implements bounded tasks. Reviews Claude-authored code. | `ultra` for reviews and batches; `max` for scoped implementation, via per-call `reasoning_effort` | Default for every delegation. |
+| Codex catalog's workhorse model (GPT-6 Sol) | Relief executor | Bounded mechanical implementation when Astra quota is short. Fallback if Astra access lapses. Lint-grade second pass on Astra diffs. | `max` | Per-call `model` override only. Never the global default while Astra is available. Never long-horizon work until evaluated. |
+| GPT-6 Luna, the GPT-5.x line | Unassigned | Still in the Codex catalog, which calls the 5.x models "older"; GPT-5.5 retires 2026-10-14. | n/a | Do not use. |
+
+**Keeping each role on the newest model.** The skill starts every session by checking its own model and effort against this table, and `node scripts/doctor.mjs` (or `/codex-broker:setup`) checks the settings that make it automatic:
+
+- **Claude Code:** `"model": "opus"` in `~/.claude/settings.json`. The alias always moves to the newest Opus; a full id such as `claude-opus-5-5` stays pinned. Use `/model fable` for a Fable session.
+- **Effort:** saved per model under `modelSettings`, so each new Opus or Fable starts at its own default (Opus 5.5 starts at Medium). On a new model run `/effort high` once and press Enter.
+- **Codex:** `codex-model` compares `model` in `~/.codex/config.toml` with the top of Codex's own catalog. Switch with `node scripts/configure-codex.mjs --model <id> --effort ultra`.
+- **Desktop chat and Cowork:** pick the model in the app; no setting reaches them, so the skill's own check is what catches a wrong model there.
 
 **Fable-coding gate.** Fable's context is the scarcest resource in the loop, and the user plans it. Fable writes code only with the user's explicit, per-task permission, asked in chat before the first edit. When Astra fails a hard task the fallback order is a tighter `codex_resume`, then a narrower fresh delegation, then asking the user whether Fable takes it over. Sol is never the fallback for hard tasks.
 

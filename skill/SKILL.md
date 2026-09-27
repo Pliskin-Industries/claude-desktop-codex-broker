@@ -2,15 +2,16 @@
 name: codex-delegation
 description: >-
   Delegate scoped coding work to OpenAI's Codex (currently GPT-6 Astra, with
-  GPT-5.6 Sol as the relief executor) via the Codex broker tools when they are
+  GPT-6 Sol as the relief executor) via the Codex broker tools when they are
   available in this session. Use for "delegate to codex",
   "task codex", "have GPT implement/write this", "get a second opinion on this
   design", "adversarial review", "attack this plan/architecture", "codex status",
   "resume the codex task", or any implementation, test-writing, bugfix, or
-  code-review task while the codex broker MCP tools are present. Fable plans,
-  scopes, reviews, and integrates; Codex executes bounded implementation and
-  adversarial review. Git is the sync layer between Fable's cloud container and
-  Codex's local disk.
+  code-review task while the codex broker MCP tools are present. The
+  orchestrating Claude (the latest Opus by default) plans, scopes, reviews, and
+  integrates; Codex executes bounded implementation and adversarial review.
+  Starts by checking that each role runs on the newest model at the right
+  effort.
 ---
 
 # Codex Delegation
@@ -27,23 +28,63 @@ eyes. It is never the decision-maker.
 Invoke this skill whenever the broker tools are present and the work is coding,
 code review, or a design critique — even if the user did not say "codex".
 
-## Model hierarchy (standing, ratified 2026-08-06; amended 2026-09-08)
+## Model hierarchy (standing, ratified 2026-08-06; amended 2026-09-08, 2026-09-27)
+
+Roles are held by the **newest** model of each line, not by a version number.
+The version in brackets is what that means as of the last amendment.
 
 | Model | Tier | Role | Effort | When |
 |---|---|---|---|---|
-| Claude Fable 5.1 | Overlord | Normative rulings, contract changes, phase-boundary review, final accountability. Verdict outranks everything. Writes code only with the user's per-task permission (Fable-coding gate below). | n/a | Boundaries and rulings. Never routine execution. |
-| Claude Opus (latest) | Default orchestrator | Runs sessions: scopes tasks, writes delegation prompts, runs the gates, merges. | Max | Every ordinary execution session. Contract questions go to Fable. |
-| GPT-6 Astra (Codex) | Executor and adversarial reviewer | Attacks Fable's plans before build. Implements bounded tasks. Reviews Claude-authored code. | `ultra` for reviews and batches; `max` for scoped implementation, via per-call `reasoning_effort` | Default for every delegation. |
-| GPT-5.6 Sol (Codex) | Relief executor | Bounded mechanical implementation when Astra quota is short. Fallback if Astra access lapses. Lint-grade second pass on Astra diffs. | Max | Per-call `model: "gpt-5.6-sol"` only. Never the global default while Astra is available. Never long-horizon work. |
-| GPT-5.6 Terra, Luna | Unassigned | In the Codex catalog; no role until there is a reason to test them. | n/a | Do not use. |
+| Claude Fable, latest (Fable 5.1) | Overlord | Normative rulings, contract changes, phase-boundary review, final accountability. Verdict outranks everything. Writes code only with the user's per-task permission (Fable-coding gate below). | High | Boundaries and rulings. Never routine execution. |
+| Claude Opus, latest (Opus 5.5) | Default orchestrator | Runs sessions: scopes tasks, writes delegation prompts, runs the gates, merges. | High | Every ordinary execution session. Contract questions go to Fable. |
+| Codex catalog's top model (GPT-6 Astra) | Executor and adversarial reviewer | Attacks the orchestrator's plans before build. Implements bounded tasks. Reviews Claude-authored code. | `ultra` for reviews and batches; `max` for scoped implementation, via per-call `reasoning_effort` | Default for every delegation. |
+| Codex catalog's workhorse model (GPT-6 Sol) | Relief executor | Bounded mechanical implementation when Astra quota is short. Fallback if Astra access lapses. Lint-grade second pass on Astra diffs. | `max` | Per-call `model: "gpt-6-sol"` only. Never the global default while Astra is available. Never long-horizon work until it has been evaluated here. |
+| GPT-6 Luna, and the GPT-5.x line | Unassigned | Still in the Codex catalog; the catalog itself calls the 5.x models "older", and GPT-5.5 retires 2026-10-14. | n/a | Do not use. |
 
 Why this shape (published results, 2026-09): on Terminal-Bench 4.0 Astra
-(57.7) and Fable 5.1 (55.8) are peers, Opus 5 (52.3) is close behind, and Sol
-(37.3) is a clear tier below on long-horizon agentic work. Defaulting the
-executor to Astra therefore costs nothing against Fable coding directly, and
-Sol is safe only for bounded work.
+(57.7) and Fable 5.1 (55.8) are peers, Opus 5 (52.3) is close behind, and
+GPT-5.6 Sol (37.3) is a clear tier below on long-horizon agentic work.
+Defaulting the executor to Astra therefore costs nothing against Fable coding
+directly. GPT-6 Sol replaced GPT-5.6 Sol as relief executor (2026-09-27)
+because the Codex catalog ranks it above every 5.x model and lists the same
+effort levels; it has no Terminal-Bench result here yet, so the bounded-work
+limits carry over until it is evaluated.
 
-- **Fable (Claude Fable 5.1) — supreme overlord.** Reserved for the moments only it
+Effort for the Claude roles is **High** (amended 2026-09-27, from Max for
+Opus). Orchestration is judgment: reviewing Codex diffs, writing exact
+delegation prompts, deciding what merges. Medium risks shallow reviews; Max
+costs latency on every turn while Codex already reasons at `ultra`/`max`. Raise
+to `xhigh` or `max` for a single hard review with `/effort`, then go back.
+
+## Check the models first
+
+Do this once per session, before the first delegation. It costs one look and
+catches the case where a stale model quietly runs the loop.
+
+1. **Your own model.** Your system prompt or environment names the model you
+   are running as, and usually the newest models of each family.
+   - The newest Opus: you are the orchestrator. Proceed.
+   - The newest Fable: the Fable rules below apply, including the coding gate.
+   - Anything else (Sonnet, Haiku, or an older Opus or Fable): tell the user
+     before orchestrating, and suggest `/model opus` (or `/model fable`). The
+     aliases always resolve to the newest model; a full model id stays pinned.
+     Continue only if they say so.
+2. **Your effort (Claude Code).** Effort is saved per model id in
+   `~/.claude/settings.json` under `modelSettings.<your model id>.effortLevel`,
+   and each new model starts at its own default (Opus 5.5 starts at medium);
+   a top-level `effortLevel` no longer applies from Opus 5.5 on. If yours is
+   not `high`, ask the user to run `/effort high` and press Enter to save it for
+   this model. A `CLAUDE_CODE_EFFORT_LEVEL` environment variable overrides all
+   of this; mention it if set. Outside Claude Code (Desktop chat, Cowork) you
+   cannot see effort; skip this step.
+3. **Codex's model.** The executor is `model` in `~/.codex/config.toml`; the
+   newest model is the top of Codex's own catalog. Where you can run commands,
+   `node scripts/doctor.mjs` in the broker checkout (or `/codex-broker:setup`
+   with the plugin) reports both as `codex-model`. If a newer model exists, tell
+   the user; switching is `node scripts/configure-codex.mjs --model <id>
+   --effort ultra`. Never switch it silently.
+
+- **Fable (the latest Claude Fable) — supreme overlord.** Reserved for the moments only it
   can serve: phase-boundary reviews, contract amendments and freezes, finding
   triage, normative rulings, governance logs, and final accountability. Its review
   verdict outranks every other model's output, including its own delegates'.
@@ -62,7 +103,7 @@ Sol is safe only for bounded work.
   is `codex_resume` with a tighter prompt, then a fresh Astra delegation with
   narrower scope, then asking the user whether Fable takes it over. Sol is not
   the fallback for hard tasks.
-- **Claude Opus (latest) on Max effort — DEFAULT orchestrator.** Runs execution
+- **Claude Opus (latest) on High effort — DEFAULT orchestrator.** Runs execution
   sessions as the standing default (not merely a fallback), to extend Fable's
   availability: directs Codex tasks, runs the gates, merges. Verified acceptable
   (the 2026-08-05 Opus-orchestrated phase held every architectural invariant under
@@ -89,7 +130,8 @@ Sol is safe only for bounded work.
   `node scripts/configure-codex.mjs --model <id> --effort ultra` (backs up
   first). Leave `model` unset in delegation calls so the config.toml default
   wins; hardcoding a model name anywhere else is how the default drifts.
-- **GPT-5.6 Sol — relief executor.** Reached only through the per-call `model`
+- **GPT-6 Sol — relief executor** (`model: "gpt-6-sol"`; replaced GPT-5.6 Sol
+  on 2026-09-27). Reached only through the per-call `model`
   parameter. Use it for bounded mechanical work when Astra quota is short, as
   the fallback if Astra access lapses (roll the global default back with the
   same configure command), and for a lint-grade second pass on Astra diffs
@@ -208,7 +250,7 @@ more (network installs, writing outside the repo, secrets), stop and ask the use
 
 This is the core of the skill. Read the decision rule before every delegation.
 
-**Fable (you) keep:**
+**You (the orchestrating Claude: the latest Opus by default, Fable when it runs the session) keep:**
 - Initial planning, architecture, and task decomposition.
 - Crafting the Codex prompt (see `references/gpt-prompting.md`).
 - Quality control of everything Codex returns. You review every Codex diff
@@ -328,7 +370,7 @@ still no GitHub round trip.
 ## Failure handling
 
 - **Usage-limit / quota errors.** Report the exact error to the user. Offer to
-  wait and retry, to route bounded work to Sol via the per-call `model`
+  wait and retry, to route bounded work to GPT-6 Sol via the per-call `model`
   parameter, or to switch to an API-key-backed run if they have one. Do not
   silently swap models or keys, and do not change the global default.
 - **Astra stopped by the safety classifier.** Astra carries a "Critical" cyber
@@ -383,7 +425,7 @@ still no GitHub round trip.
 
 ## Adversarial mode
 
-Cross-model review is valuable specifically because Fable's and Codex's errors
+Cross-model review is valuable specifically because Claude's and Codex's errors
 are uncorrelated — Codex catches classes of mistakes you are blind to, and vice
 versa. Exploit that; do not defer to it.
 

@@ -3,7 +3,7 @@
 How to write the `prompt` you pass to `codex_task`, `codex_start`, `codex_review`,
 and `codex_resume`. Adapted from OpenAI's own GPT-5.x coding-model prompting
 guidance; the techniques are model-family-generic and apply to GPT-6 Astra and
-to GPT-5.6 Sol when it is used as the relief executor.
+to GPT-6 Sol when it is used as the relief executor.
 
 ## Core stance
 
@@ -168,7 +168,7 @@ change/design, not to validate it.
 
 <task>
 Find the strongest reasons this should not ship. Target: <diff or design>.
-Focus: <the specific risk areas Fable cares about>.
+Focus: <the specific risk areas you care about>.
 </task>
 
 <attack_surface>

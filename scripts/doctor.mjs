@@ -70,6 +70,61 @@ export function sandboxVerdict(doctorJson, platform) {
   };
 }
 
+// The orchestrator should be the newest Opus at High effort (skill/SKILL.md,
+// model hierarchy). settings is ~/.claude/settings.json. The doctor can't know
+// which Opus is newest, so it checks the two things that make that automatic:
+// the `opus` alias (a full id stays pinned) and a saved High effort per model
+// (from Opus 5.5 on, a top-level effortLevel is ignored and each new model
+// starts at its own default, medium for Opus 5.5).
+export function claudeModelVerdict(settings, env = {}) {
+  const problems = [];
+  const model = settings?.model;
+  if (!model) problems.push("no default model set; sessions use the plan default");
+  else if (/^claude-/.test(model)) problems.push(`model pinned to ${model}; it won't move to a newer release`);
+  else if (!["opus", "opus[1m]"].includes(model)) problems.push(`default model is "${model}"; the orchestrator should be Opus`);
+  const efforts = Object.entries(settings?.modelSettings || {})
+    .filter(([id]) => /^claude-(opus|fable)-/.test(id))
+    .map(([id, v]) => [id, v?.effortLevel]);
+  const notHigh = efforts.filter(([, e]) => e !== "high");
+  if (efforts.length === 0) problems.push("no saved effort for Opus or Fable (Opus 5.5 starts at medium)");
+  for (const [id, e] of notHigh) problems.push(`${id} effort is ${e || "unset"}`);
+  const fix = ['"model": "opus" in ~/.claude/settings.json', "in a session on each new Opus or Fable: /effort high, then Enter"];
+  if (env.CLAUDE_CODE_EFFORT_LEVEL) {
+    problems.push(`CLAUDE_CODE_EFFORT_LEVEL=${env.CLAUDE_CODE_EFFORT_LEVEL} overrides every saved effort`);
+  }
+  const summary = [model ? `model ${model}` : null, ...efforts.map(([id, e]) => `${id} ${e || "unset"}`)].filter(Boolean).join("; ");
+  return problems.length
+    ? { status: "warn", summary: problems.join("; "), fix: fix.join("; ") }
+    : { status: "ok", summary: `${summary} (the alias tracks the newest Opus)` };
+}
+
+// Codex's executor should be the top model of Codex's own catalog
+// (~/.codex/models_cache.json: lower `priority` = ranked higher). Also checks
+// the configured effort is one the model supports, and flags a model that
+// Codex has scheduled for retirement.
+export function codexModelVerdict({ model, effort }, catalog) {
+  const listed = (catalog?.models || []).filter((m) => m.visibility === "list" && m.supported_in_api !== false);
+  if (listed.length === 0) {
+    return { status: "warn", summary: "Codex's model catalog isn't cached yet", fix: "run any codex command once, then re-run this check" };
+  }
+  const top = [...listed].sort((a, b) => a.priority - b.priority)[0];
+  if (!model) {
+    return { status: "warn", summary: `no model in config.toml; the newest is ${top.slug}`, fix: `node scripts/configure-codex.mjs --model ${top.slug} --effort ultra` };
+  }
+  const mine = (catalog.models || []).find((m) => m.slug === model);
+  if (!mine) {
+    return { status: "warn", summary: `${model} is not in Codex's catalog (misspelled or retired); the newest is ${top.slug}`, fix: `node scripts/configure-codex.mjs --model ${top.slug} --effort ultra` };
+  }
+  const problems = [];
+  if (mine.slug !== top.slug && mine.priority > top.priority) problems.push(`newer model available: ${top.slug} (${top.display_name || top.slug})`);
+  const levels = (mine.supported_reasoning_levels || []).map((l) => l.effort);
+  if (effort && levels.length && !levels.includes(effort)) problems.push(`effort "${effort}" isn't supported by ${model} (${levels.join(", ")})`);
+  if (mine.upgrade?.retirement_at) problems.push(`${model} retires ${mine.upgrade.retirement_at.slice(0, 10)}`);
+  return problems.length
+    ? { status: "warn", summary: problems.join("; "), fix: `node scripts/configure-codex.mjs --model ${top.slug} --effort ultra (tell the user; never switch silently)` }
+    : { status: "ok", summary: `${model} at ${effort || "its default effort"} is the newest in Codex's catalog` };
+}
+
 // Required checks fail the run; optional ones only warn.
 export function exitCode(results) {
   return results.some((r) => r.status === "fail") ? 1 : 0;
@@ -196,6 +251,28 @@ function checkCodexConfig() {
 
 // git and gh are probed through the broker's own resolvers, so GIT_BIN /
 // GH_BIN overrides and the Windows install-location search are what's checked.
+function readJsonOr(file, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+function checkClaudeModel() {
+  const dir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+  return { id: "claude-model", ...claudeModelVerdict(readJsonOr(path.join(dir, "settings.json"), {}), process.env) };
+}
+
+function checkCodexModel() {
+  const file = configPath();
+  const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  const quoted = (line) => /"([^"]*)"/.exec(line || "")?.[1] || null;
+  const r = codexConfigReport(text);
+  const catalog = readJsonOr(path.join(path.dirname(file), "models_cache.json"), null);
+  return { id: "codex-model", ...codexModelVerdict({ model: quoted(r.model), effort: quoted(r.effort) }, catalog) };
+}
+
 function checkGit() {
   let bin;
   try {
@@ -239,7 +316,7 @@ export function runChecks({ viaPlugin = false } = {}) {
   const { codex, bin } = checkCodex();
   results.push(codex);
   if (bin && codex.status !== "fail") results.push(checkLogin(bin), checkSandbox(bin));
-  results.push(checkCodexConfig(), checkGit(), checkGh(), checkSkill(viaPlugin));
+  results.push(checkCodexConfig(), checkCodexModel(), checkClaudeModel(), checkGit(), checkGh(), checkSkill(viaPlugin));
   return results;
 }
 
