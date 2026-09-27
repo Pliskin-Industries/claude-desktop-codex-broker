@@ -1,0 +1,10 @@
+{
+  "name": "codex-broker-plugin",
+  "version": "1.8.0",
+  "private": true,
+  "description": "Dependencies for the codex-broker Claude Code plugin. Claude Code runs `npm ci --ignore-scripts` here when it installs the plugin; server/ resolves them from this node_modules. Keep dependencies identical to server/package.json (a test enforces it).",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

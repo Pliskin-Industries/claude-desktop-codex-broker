@@ -9,19 +9,17 @@ flowchart TD
     C --> D[Phase 4\nVerify in a fresh session]
 ```
 
+**Fast path:** Phases 1 and 2 are automated. From a clone of this repo, run `powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1`; it installs what's missing, stops for `codex login` and the one administrator approval, and ends with a readiness check (`node scripts/doctor.mjs`, which you can re-run any time). Then continue at Phase 3. The steps below are the same work by hand.
+
 ## Phase 1 — Codex CLI
 
-- [ ] **1.1** If PowerShell blocks npm with an execution-policy error, run once:
-
-  ```powershell
-  Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-  ```
+- [ ] **1.1** If PowerShell says "running scripts is disabled on this system" for `npm` or `codex`, that's its execution policy blocking the `.ps1` launchers. Type `npm.cmd` and `codex.cmd` instead; those aren't scripts, so nothing needs to change. (Allowing local scripts for your account with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` also works, but it's a permanent setting you don't need.)
 
 - [ ] **1.2** Check Node (`node -v`, need 18.18+; if missing: `winget install OpenJS.NodeJS.LTS`, then reopen PowerShell), then:
 
   ```powershell
-  npm install -g @openai/codex
-  codex login
+  npm.cmd install -g @openai/codex@latest
+  codex.cmd login
   ```
 
   Sign in with your ChatGPT account (any plan) or API key.

@@ -16,6 +16,7 @@ import {
 } from "../lib/util.mjs";
 import { buildResumeArgs, buildReviewArgs, buildTaskArgs } from "../lib/codex.mjs";
 import { applyChanges, report as configReport } from "../../scripts/configure-codex.mjs";
+import { exitCode as doctorExit, MIN_CODEX, parseVersion, sandboxVerdict, versionAtLeast } from "../../scripts/doctor.mjs";
 import {
   ANTHROPIC_PUBLISHER_ID,
   depsHash,
@@ -296,10 +297,50 @@ async function main() {
     const packageVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, "server", "package.json"), "utf8")).version;
     const serverSource = fs.readFileSync(path.join(repoRoot, "server", "server.mjs"), "utf8");
     const serverVersion = serverSource.match(/name:\s*["']codex-broker["']\s*,\s*version:\s*["']([^"']+)["']/)?.[1];
-    assert(
-      manifestVersion === packageVersion && packageVersion === serverVersion,
-      `version mismatch: manifest.json=${manifestVersion}, server/package.json=${packageVersion}, server/server.mjs=${serverVersion ?? "not found"}`
-    );
+    // The plugin pins its version, so plugin users only get an update when it changes.
+    const pluginVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, ".claude-plugin", "plugin.json"), "utf8")).version;
+    const rootPackageVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8")).version;
+    const all = { "manifest.json": manifestVersion, "server/package.json": packageVersion, "server/server.mjs": serverVersion, ".claude-plugin/plugin.json": pluginVersion, "package.json": rootPackageVersion };
+    assert(new Set(Object.values(all)).size === 1, `version mismatch: ${JSON.stringify(all)}`);
+  });
+
+  await test("plugin manifest points at real files, and its dependencies match the server's exactly", async () => {
+    const repoRoot = path.resolve(HERE, "..", "..");
+    const read = (p) => JSON.parse(fs.readFileSync(path.join(repoRoot, p), "utf8"));
+    const plugin = read(".claude-plugin/plugin.json");
+    const market = read(".claude-plugin/marketplace.json");
+    const entry = market.plugins.find((p) => p.name === plugin.name);
+    assert(entry && entry.source === "./", `marketplace must list ${plugin.name} at the repo root: ${JSON.stringify(market.plugins)}`);
+    const srv = plugin.mcpServers["codex-broker"];
+    assert(srv && srv.command === "node" && srv.args[0] === "${CLAUDE_PLUGIN_ROOT}/server/server.mjs", `mcp server: ${JSON.stringify(srv)}`);
+    for (const dir of plugin.skills) {
+      assert(fs.existsSync(path.join(repoRoot, dir, "SKILL.md")), `skills path ${dir} has no SKILL.md`);
+    }
+    assert(fs.existsSync(path.join(repoRoot, "skills", "setup", "SKILL.md")), "setup skill missing");
+    // Claude Code runs `npm ci --ignore-scripts` at the plugin root; server/ resolves
+    // the result. The root lockfile must pin exactly what the server is tested with.
+    const rootPkg = read("package.json");
+    const serverPkg = read("server/package.json");
+    assert(JSON.stringify(rootPkg.dependencies) === JSON.stringify(serverPkg.dependencies), "root package.json dependencies differ from server/package.json");
+    const pkgs = (lock) => Object.fromEntries(Object.entries(lock.packages).filter(([k]) => k !== ""));
+    const rootLock = pkgs(read("package-lock.json"));
+    const serverLock = pkgs(read("server/package-lock.json"));
+    assert(JSON.stringify(rootLock) === JSON.stringify(serverLock), "package-lock.json differs from server/package-lock.json; regenerate it from the server lockfile");
+  });
+
+  await test("doctor parses versions and reads the Windows sandbox verdict from codex doctor --json", async () => {
+    assert(JSON.stringify(parseVersion("codex-cli 0.157.1")) === "[0,157,1]", "parse codex version");
+    assert(parseVersion("garbage") === null, "unparseable version");
+    assert(versionAtLeast([0, 153, 1], MIN_CODEX) && versionAtLeast([1, 0, 0], MIN_CODEX), "at or above the floor");
+    assert(!versionAtLeast([0, 153, 0], MIN_CODEX) && !versionAtLeast(null, MIN_CODEX), "below the floor or unknown");
+    const doc = (backend, provisioning) => ({ checks: { "sandbox.helpers": { details: { "sandbox backend": backend, "sandbox provisioning": provisioning } } } });
+    assert(sandboxVerdict(doc("elevated", "complete"), "win32").status === "ok", "provisioned elevated sandbox is ok");
+    const un = sandboxVerdict(doc("unelevated", "complete"), "win32");
+    assert(un.status === "fail" && /sandbox setup --elevated --current-user/.test(un.fix), `unelevated must fail with the setup command: ${JSON.stringify(un)}`);
+    assert(sandboxVerdict(doc(undefined, undefined), "win32").status === "fail", "unset backend must fail");
+    assert(sandboxVerdict(null, "win32").status === "warn", "no doctor output is a warning, not a pass");
+    assert(sandboxVerdict(null, "linux").status === "ok", "non-Windows skips the check");
+    assert(doctorExit([{ status: "ok" }, { status: "warn" }]) === 0 && doctorExit([{ status: "ok" }, { status: "fail" }]) === 1, "exit code");
   });
 
   await runWindowsResolutionTests();

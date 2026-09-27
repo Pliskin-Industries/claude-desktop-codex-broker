@@ -1,9 +1,35 @@
 # Installing the Codex Broker for Claude Code
 
-Two paths. The first is the point of this repo: let Claude Code do its own
-setup.
+## Path 0 — the plugin (recommended)
 
-## Path A — let Claude Code set itself up (recommended)
+The repo is a Claude Code plugin and its own marketplace. The plugin brings
+the broker (as an MCP server Claude Code starts itself, with dependencies
+installed at plugin install) and the `codex-delegation` skill:
+
+```bash
+claude plugin marketplace add Pliskin-Industries/claude-desktop-codex-broker
+claude plugin install codex-broker@pliskin-industries
+```
+
+Then run `/codex-broker:setup` in a session. It runs `scripts/doctor.mjs` and
+walks you through anything missing: Node, the Codex CLI and its version,
+`codex login`, the Windows sandbox, keep-awake. On a new Windows machine,
+`scripts/bootstrap.ps1` does the installs in one go (see the README). Tools
+appear as `mcp__plugin_codex-broker_codex-broker__*`.
+
+Updates: turn on auto-update for the `pliskin-industries` marketplace under
+`/plugin` → Marketplaces (off by default for third-party marketplaces), or run
+`claude plugin update codex-broker@pliskin-industries`; then `/reload-plugins`
+restarts the broker on the new version. The plugin pins its version, so an
+update arrives with each release, not each commit.
+
+If you also keep a clone with the project-scoped `.mcp.json` (Path A), a
+session opened inside the clone sees both servers under different prefixes.
+Pick one.
+
+The other paths register the broker by hand.
+
+## Path A — let Claude Code set itself up
 
 ```bash
 git clone https://github.com/Pliskin-Industries/claude-desktop-codex-broker.git

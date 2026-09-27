@@ -32,14 +32,39 @@ The delegation skill pins each model to one role (standing hierarchy, ratified 2
 |---|---|
 | `server/` | Broker MCP server source (Node, zero-dependency runtime + @modelcontextprotocol/sdk), integration suite with a mock Codex harness |
 | `skill/` | `codex-delegation` Claude skill — role architecture, git protocol, GPT prompting conventions |
-| `scripts/` | Deterministic packagers for both published artifacts; each takes `--verify` to check a built archive against its source |
+| `.claude-plugin/`, `skills/setup/`, `package.json` | The Claude Code plugin and its marketplace: manifest, the `/codex-broker:setup` skill, and the dependency manifest Claude Code installs from |
+| `scripts/` | `bootstrap.ps1` (Windows setup), `doctor.mjs` (preflight), `update-broker.mjs` (update and restart Desktop), `configure-codex.mjs`, and deterministic packagers for both published artifacts (each takes `--verify`) |
 | `docs/` | [Architecture](docs/ARCHITECTURE.md) · [Windows install guide](docs/INSTALL-WINDOWS.md) · [Field-testing lessons](docs/LESSONS.md) |
 
 Built packages are published on the
 [Releases page](https://github.com/Pliskin-Industries/claude-desktop-codex-broker/releases/latest),
 not committed to the repo — CI builds them from source on each tagged version.
 
-## Quick start — Claude Desktop / Cowork
+## Quick start — prerequisites on Windows (one command)
+
+```powershell
+winget install Git.Git
+git clone https://github.com/Pliskin-Industries/claude-desktop-codex-broker.git
+cd claude-desktop-codex-broker
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
+```
+
+`bootstrap.ps1` installs what's missing (Node LTS, Git, optionally the GitHub CLI, the Codex CLI), installs the broker's server dependencies, sets Codex's defaults, and ends with `scripts/doctor.mjs`, which checks everything and prints a fix for anything that fails. `-ExecutionPolicy Bypass` covers that one run; nothing is changed permanently. It's safe to re-run. It stops for the two things only you can do: `codex login`, and one administrator approval for Codex's sandbox. Check a machine any time with `node scripts/doctor.mjs`.
+
+## Quick start — Claude Code and Cowork (plugin)
+
+The repo is also a Claude Code plugin and its own marketplace. The plugin carries the broker and the `codex-delegation` skill, so there's nothing to register or copy by hand:
+
+```bash
+claude plugin marketplace add Pliskin-Industries/claude-desktop-codex-broker
+claude plugin install codex-broker@pliskin-industries
+```
+
+(Or in a session: `/plugin marketplace add Pliskin-Industries/claude-desktop-codex-broker`, then `/plugin install codex-broker@pliskin-industries`.) Then run `/codex-broker:setup`: it runs the doctor and walks you through anything missing, including the steps from the section above. Tools appear as `mcp__plugin_codex-broker_codex-broker__*`. Claude Code installs the server's dependencies itself when it installs the plugin.
+
+Per Anthropic's docs, the same plugin loads in the Desktop app's Code tab and in Cowork sessions that run on your computer, but a plugin's local MCP server is ignored in Desktop **chat**; use the extension below for chat. Cowork through the desktop bridge hasn't been tested with the plugin yet.
+
+## Quick start — Claude Desktop chat (extension)
 
 1. Prerequisites: Node 18.18+, `npm install -g @openai/codex`, `codex login` (ChatGPT subscription or API key), the one-time Codex sandbox setup from an administrator PowerShell (`& "$env:APPDATA\npm\codex.cmd" sandbox setup --elevated --current-user`), GitHub CLI (`gh auth login`) for repo operations.
 2. Download `codex-broker.mcpb` from the [latest release](https://github.com/Pliskin-Industries/claude-desktop-codex-broker/releases/latest), then Claude Desktop → Settings → Extensions → drag the file in.
@@ -49,7 +74,7 @@ not committed to the repo — CI builds them from source on each tagged version.
 
 Full walkthrough with verification steps: [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md).
 
-## Quick start — Claude Code
+## Quick start — Claude Code without the plugin
 
 Clone the repo, open Claude Code inside it, and say: **"Set up the Codex broker per CLAUDE.md."** Claude Code checks prerequisites, installs server deps, installs the skill, configures the Codex CLI (keep-awake, model and effort defaults via `scripts/configure-codex.mjs`), runs the test suite, and tells you the steps it can't do for you (`codex login`, and on Windows the one-time sandbox setup from an administrator PowerShell). The repo's `.mcp.json` provides the project-scoped server (tools appear as `mcp__codex-broker__*`); [CLAUDE.md](CLAUDE.md) includes the user-scoped registration command for using the broker from any directory.
 
@@ -66,7 +91,9 @@ More detail, including how to add Claude Code next to an existing Desktop instal
 
 ## Updating the broker
 
-With the extension's **Broker checkout** setting pointed at a clone (Desktop quick start, step 3), an update is one command from that clone:
+**Plugin.** New versions arrive when a release bumps the plugin's version. Either turn on auto-update for the marketplace (`/plugin` → Marketplaces → `pliskin-industries` → Enable auto-update; it's off by default for third-party marketplaces), or update by hand with `claude plugin update codex-broker@pliskin-industries`. Then run `/reload-plugins`: it restarts the broker on the new version without restarting the app.
+
+**Extension.** With the extension's **Broker checkout** setting pointed at a clone (Desktop chat quick start, step 3), an update is one command from that clone:
 
 ```powershell
 node scripts/update-broker.mjs
@@ -74,9 +101,9 @@ node scripts/update-broker.mjs
 
 It pulls, reinstalls server dependencies only if they changed, runs the tests, and restarts Claude Desktop only if they pass. The restart closes only Claude Desktop's own processes, waits until they're gone, and reopens the app, so there's no trip to Task Manager. You can run it from inside a Claude session; that session closes with the app and you reopen it afterwards. Useful flags: `--restart-only` (for example after installing Node or the Codex CLI, since a running app keeps its old PATH), `--no-restart`, and `--dry-run`. Restart automation is Windows-only for now.
 
-Nothing updates on its own; you run the command. Details, the manual route, and the bundled-copy route: [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md#updating-the-broker).
+The extension never updates on its own: Anthropic's directory is the only source of automatic extension updates, and it no longer accepts `.mcpb` submissions. Details, the manual route, and the bundled-copy route: [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md#updating-the-broker).
 
-A Claude Code CLI registration runs `server/server.mjs` from the clone directly, so it needs only `git pull` (plus `npm ci --prefix server` if dependencies changed) and a new Claude Code session.
+**Manual registration.** A Claude Code CLI registration runs `server/server.mjs` from the clone directly, so it needs only `git pull` (plus `npm ci --prefix server` if dependencies changed) and a new Claude Code session.
 
 ## Tools
 

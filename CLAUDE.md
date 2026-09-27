@@ -98,8 +98,9 @@ failure rather than improvising around it.
   flags by construction. Do not try to widen it; ask the user instead.
 - **Host differences.** A Claude Desktop extension exposes tools as
   `mcp__Codex_Broker__<name>`; Cowork through the desktop bridge uses
-  `mcp__remote-devices__Codex_Broker__<name>`; and Claude Code CLI registration
-  uses `mcp__codex-broker__<name>`. Under Desktop/Cowork, every tool call is
+  `mcp__remote-devices__Codex_Broker__<name>`; Claude Code CLI registration
+  uses `mcp__codex-broker__<name>`; and the `codex-broker` plugin uses
+  `mcp__plugin_codex-broker_codex-broker__<name>`. Under Desktop/Cowork, every tool call is
   capped at ~60s (hence the sub-45s rule for sync `codex_task`).
   In Claude Code the MCP timeout is configurable and typically higher, but
   keep background as the default for real work anyway — job state persists on
@@ -158,7 +159,19 @@ failure rather than improvising around it.
   `manifest.json` + `package.json` + `node_modules/` + `server/` (no dir
   entries). `codex-delegation.skill` = zip of `codex-delegation/` wrapping
   `skill/`'s contents. Rebuild both when their inputs change; keep manifest,
-  `server/package.json`, and `server.mjs` versions in lockstep.
+  `server/package.json`, `server.mjs`, `.claude-plugin/plugin.json` and the
+  root `package.json` versions in lockstep (a test enforces it).
+- **The repo is also a Claude Code plugin and its own marketplace.**
+  `.claude-plugin/marketplace.json` (marketplace `pliskin-industries`) lists
+  the `codex-broker` plugin at the repo root; `.claude-plugin/plugin.json`
+  declares the broker inline and ships `skill/` plus `skills/setup/`
+  (`/codex-broker:setup`, which runs `scripts/doctor.mjs --plugin`). The plugin
+  pins `version`, so plugin users only update when it changes: bump it with
+  every release. Claude Code runs `npm ci --ignore-scripts` at the plugin root,
+  so the root `package.json`/`package-lock.json` exist only for that and must
+  pin exactly what `server/package-lock.json` pins. After changing server
+  dependencies, run `node scripts/sync-plugin-lock.mjs` (the test names the
+  mismatch until you do). Check manifests with `claude plugin validate .`.
   Build the skill with `node scripts/build-skill.mjs`; use `--verify` to check it.
   The packager zips working-tree bytes and the committed artifact is built on
   Windows, so `--verify` assumes a `core.autocrlf=true` checkout. On a checkout

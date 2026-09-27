@@ -156,6 +156,10 @@ Known prefixes:
 - `mcp__codex-broker__<name>` — Claude Code CLI, registered from the repo's
   `.mcp.json` or via `claude mcp add`. Takes the server key verbatim, so it
   matches whatever name you used there.
+- `mcp__plugin_codex-broker_codex-broker__<name>` — installed as the
+  `codex-broker` plugin (Claude Code, the Desktop Code tab, Cowork on the
+  user's computer). The plugin also ships this skill and a
+  `/codex-broker:setup` check.
 
 Same fifteen tools whichever prefix is in play:
 

@@ -1,0 +1,14 @@
+{
+  "name": "pliskin-industries",
+  "owner": { "name": "Pliskin Industries", "url": "https://github.com/Pliskin-Industries" },
+  "description": "Plugins from Pliskin Industries.",
+  "plugins": [
+    {
+      "name": "codex-broker",
+      "source": "./",
+      "description": "Delegate scoped coding work from Claude to OpenAI's Codex CLI: MCP broker plus the codex-delegation skill.",
+      "category": "development",
+      "tags": ["codex", "openai", "delegation", "mcp"]
+    }
+  ]
+}
