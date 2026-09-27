@@ -11,23 +11,31 @@
 // Why a script: the extension's server process never restarts on its own
 // (docs/LESSONS.md #3), a tray quit does not always end every Claude process,
 // and a process keeps the PATH it started with, so tools installed after the
-// app started stay invisible to the broker until a real restart.
+// app started stay invisible to the broker until a real restart (LESSONS #10).
 //
 // The restart runs in a helper created through WMI (Win32_Process.Create), so
 // it is not a child of Claude and survives Claude exiting. That is what lets
 // this script be run from inside a Claude session: the session ends, the
-// helper finishes the restart, and you reopen the session. The helper logs to
-// <tmp>/codex-broker-restart.log.
+// helper finishes the restart, and you reopen the session.
 //
-// Only Claude Desktop's own processes are stopped: executables under the app's
-// install directory and the desktop-managed Claude Code under %APPDATA%\Claude.
-// A standalone Claude Code CLI in a terminal is left alone. The app is
-// relaunched through Explorer, so it gets the shell's current environment.
+// What gets stopped, and how:
+// - Only the Claude Desktop package published by Anthropic (publisher id
+//   pinned below) is trusted as the app to restart; a lookalike package named
+//   Claude is refused.
+// - Only processes whose executable lives in that package's install directory,
+//   or in the desktop-managed Claude Code directory, are stopped. Each one is
+//   stopped on its own, never as a process tree, so terminals, editors or
+//   builds started from inside a Claude session keep running.
+// - Each kill is bound to the process's identity: the PID is re-opened, and
+//   the kill happens only if its start time and executable still match what
+//   was selected, so a reused PID is never killed.
+// - Once stopping has begun, any later failure still ends in an attempt to
+//   relaunch the app.
 //
-// Windows only for the restart. Verified on the Microsoft Store build; the
-// %LOCALAPPDATA%\AnthropicClaude (direct download) layout is handled but
-// untested.
+// Windows only for the restart. Claude Desktop for Windows ships as MSIX
+// packages only, so the launch target is the registered package.
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -36,77 +44,83 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 const SELF = fileURLToPath(import.meta.url);
-const DEP_FILES = ["server/package.json", "server/package-lock.json"];
+const SERVER = path.join(ROOT, "server");
+const DEPS_MARKER = path.join(SERVER, "node_modules", ".codex-broker-deps.json");
+
+// PublisherId of the Claude Desktop MSIX package ("Anthropic, PBC"). Windows
+// derives it from the signing certificate's subject, so another package can
+// only carry it if signed with a certificate for that exact subject.
+export const ANTHROPIC_PUBLISHER_ID = "pzs8sxrjxfjjc";
 
 export function parseArgs(argv) {
-  const opts = { pull: true, tests: true, restart: true, dryRun: false, helper: false };
-  for (const a of argv) {
+  const opts = { pull: true, tests: true, restart: true, dryRun: false, helper: false, log: null };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
     if (a === "--no-pull") opts.pull = false;
     else if (a === "--skip-tests") opts.tests = false;
     else if (a === "--no-restart") opts.restart = false;
     else if (a === "--restart-only") Object.assign(opts, { pull: false, tests: false, restart: true });
     else if (a === "--dry-run") opts.dryRun = true;
     else if (a === "--restart-helper") opts.helper = true;
-    else throw new Error(`unknown argument: ${a}`);
+    else if (a === "--log") {
+      opts.log = argv[++i];
+      if (!opts.log || !path.isAbsolute(opts.log)) throw new Error("--log needs an absolute path");
+    } else throw new Error(`unknown argument: ${a}`);
   }
   return opts;
 }
 
-// Reinstall server deps when the pull touched them or they were never installed.
-export function needsDepsInstall(changedFiles, nodeModulesExists) {
-  if (!nodeModulesExists) return true;
-  const norm = changedFiles.map((f) => f.replace(/\\/g, "/"));
-  return DEP_FILES.some((f) => norm.includes(f));
+// Hash of what `npm ci` installs from. Recorded after a successful install, so
+// a failed or interrupted install is retried on the next run instead of being
+// forgotten once the pull that caused it is no longer in the diff.
+export function depsHash(packageJson, packageLock) {
+  return crypto.createHash("sha256").update(packageJson).update("\0").update(packageLock).digest("hex");
 }
 
-// Decide how to relaunch Claude Desktop and which install directories belong
-// to it. startApps is Get-StartApps output ([{Name, AppID}]).
-export function pickLaunchTarget({ startApps, env, exists }) {
-  const store = (startApps || []).find((a) => a.Name === "Claude" && /^Claude_[a-z0-9]+!/i.test(a.AppID || ""));
-  if (store) {
-    const family = store.AppID.split("!")[0];
-    return {
-      kind: "store",
-      launch: ["explorer.exe", `shell:AppsFolder\\${store.AppID}`],
-      appDirs: [`${env.ProgramFiles || "C:\\Program Files"}\\WindowsApps\\${family.replace(/_([a-z0-9]+)$/i, "_")}`],
-      family,
-    };
-  }
-  const direct = env.LOCALAPPDATA ? path.win32.join(env.LOCALAPPDATA, "AnthropicClaude") : null;
-  if (direct && exists(path.win32.join(direct, "claude.exe"))) {
-    return { kind: "direct", launch: ["explorer.exe", path.win32.join(direct, "claude.exe")], appDirs: [direct] };
-  }
-  return null;
+export function needsDepsInstall({ nodeModulesExists, currentHash, installedHash }) {
+  return !nodeModulesExists || !installedHash || installedHash !== currentHash;
 }
 
-// Claude Desktop's processes: the app itself, plus the desktop-managed Claude
-// Code sessions it spawns. For the Store build appDirs holds a prefix
-// ("...\WindowsApps\Claude_") that matches every installed version, with the
-// publisher suffix checked separately.
+// Pick the Claude Desktop package to restart. packages is Get-AppxPackage
+// output reduced to {Name, PublisherId, PackageFamilyName, InstallLocation,
+// AppIds}. Only Anthropic's package qualifies, whatever else is named Claude.
+export function pickLaunchTarget(packages) {
+  const pkg = (packages || []).find(
+    (p) => p.Name === "Claude" && p.PublisherId === ANTHROPIC_PUBLISHER_ID && p.InstallLocation && (p.AppIds || []).includes("Claude")
+  );
+  if (!pkg) return null;
+  return {
+    family: pkg.PackageFamilyName,
+    installLocation: pkg.InstallLocation,
+    launch: ["explorer.exe", `shell:AppsFolder\\${pkg.PackageFamilyName}!Claude`],
+  };
+}
+
+// Claude Desktop's processes: executables in any installed version of
+// Anthropic's Claude package (siblings of the current install directory,
+// which covers a package moved to another drive and a version the app has
+// updated past but is still running), plus the desktop-managed Claude Code.
 export function selectAppProcesses(procs, { target, env }) {
   const lower = (s) => (s || "").toLowerCase();
+  const parent = lower(path.win32.dirname(target.installLocation)) + "\\";
+  const pkgDir = new RegExp(`^claude_[^\\\\]*__${ANTHROPIC_PUBLISHER_ID}$`);
   const managedCode = env.APPDATA ? lower(path.win32.join(env.APPDATA, "Claude", "claude-code")) + "\\" : null;
-  const suffix = target.kind === "store" ? lower(target.family.split("_").pop()) : null;
   return procs.filter((p) => {
     const exe = lower(p.ExecutablePath);
     if (!exe) return false;
     if (managedCode && exe.startsWith(managedCode)) return true;
-    return target.appDirs.some((d) => {
-      const dir = lower(d);
-      if (!exe.startsWith(dir)) return false;
-      if (target.kind !== "store") return exe.charAt(dir.length) === "\\";
-      // ...\WindowsApps\Claude_<version>_x64__<publisher>\...
-      const pkg = exe.slice(dir.length).split("\\")[0];
-      return pkg.endsWith(`__${suffix}`);
-    });
+    if (!exe.startsWith(parent)) return false;
+    const rest = exe.slice(parent.length).split("\\");
+    return rest.length > 1 && pkgDir.test(rest[0]);
   });
 }
 
-// The app's root processes: selected processes whose parent is not selected.
-// Killing each root's tree takes the helpers down with it.
-export function rootProcesses(selected) {
+// Stop order: processes whose parent is not itself selected (the app's main
+// process) first, then the rest. Each is still stopped individually.
+export function stopOrder(selected) {
   const ids = new Set(selected.map((p) => p.ProcessId));
-  return selected.filter((p) => !ids.has(p.ParentProcessId));
+  const roots = selected.filter((p) => !ids.has(p.ParentProcessId));
+  return [...roots, ...selected.filter((p) => ids.has(p.ParentProcessId))];
 }
 
 // --- side effects -------------------------------------------------------------
@@ -134,8 +148,8 @@ function powershell(script, env = process.env) {
   return r.stdout.trim();
 }
 
-function psJson(script) {
-  const out = powershell(`${script} | ConvertTo-Json -Compress`);
+function psJson(script, env) {
+  const out = powershell(`${script} | ConvertTo-Json -Compress`, env);
   if (!out) return [];
   const v = JSON.parse(out);
   return Array.isArray(v) ? v : [v];
@@ -143,13 +157,40 @@ function psJson(script) {
 
 function claudeProcesses() {
   return psJson(
-    "Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | Select-Object ProcessId,ParentProcessId,ExecutablePath"
+    "Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | " +
+      "Select-Object ProcessId,ParentProcessId,ExecutablePath,@{n='Created';e={ $_.CreationDate.ToFileTimeUtc() }}"
   );
 }
 
 function detectTarget() {
-  const startApps = psJson("Get-StartApps | Where-Object { $_.Name -eq 'Claude' } | Select-Object Name,AppID");
-  return pickLaunchTarget({ startApps, env: process.env, exists: fs.existsSync });
+  const packages = psJson(
+    "Get-AppxPackage -Name Claude | ForEach-Object { $m = Get-AppxPackageManifest $_; [pscustomobject]@{ " +
+      "Name = $_.Name; PublisherId = $_.PublisherId; PackageFamilyName = $_.PackageFamilyName; " +
+      "InstallLocation = $_.InstallLocation; AppIds = @($m.Package.Applications.Application | ForEach-Object { $_.Id }) } }"
+  );
+  return pickLaunchTarget(packages);
+}
+
+// Stop each process only if it is still the one that was selected: open it by
+// PID (the open handle keeps the PID from being reused while we look), then
+// compare start time and executable path before killing. Returns one line per
+// process: killed / would-kill / gone / skip / error.
+function stopProcesses(procs, dryRun) {
+  if (procs.length === 0) return [];
+  const script = `
+    $targets = $env:CB_STOP | ConvertFrom-Json
+    foreach ($t in @($targets)) {
+      try { $p = [System.Diagnostics.Process]::GetProcessById([int]$t.ProcessId) } catch { "gone $($t.ProcessId)"; continue }
+      try {
+        $null = $p.Handle
+        $same = ([math]::Abs($p.StartTime.ToFileTimeUtc() - [long]$t.Created) -le 10000000) -and ($p.Path -eq $t.ExecutablePath)
+        if (-not $same) { "skip $($t.ProcessId) (no longer the selected process)"; continue }
+        if ($env:CB_STOP_DRY -eq '1') { "would-kill $($t.ProcessId)"; continue }
+        $p.Kill(); "killed $($t.ProcessId)"
+      } catch { "error $($t.ProcessId) $($_.Exception.Message)" }
+    }`;
+  const env = { ...process.env, CB_STOP: JSON.stringify(procs), CB_STOP_DRY: dryRun ? "1" : "0" };
+  return powershell(script, env).split(/\r?\n/).filter(Boolean);
 }
 
 function sleep(ms) {
@@ -162,88 +203,129 @@ function pull() {
   const r = run("git", ["pull", "--ff-only"]);
   if (r.status !== 0) throw new Error("git pull --ff-only failed; resolve it in the checkout and re-run");
   const after = head();
-  if (before === after) return { updated: false, changed: [] };
-  const diff = run("git", ["diff", "--name-only", before, after], { capture: true }).stdout;
-  return { updated: true, changed: diff.split(/\r?\n/).filter(Boolean), before, after };
+  return { updated: before !== after, before, after };
+}
+
+function ensureDeps(dryRun) {
+  const read = (f) => fs.readFileSync(path.join(SERVER, f));
+  const currentHash = depsHash(read("package.json"), read("package-lock.json"));
+  let installedHash = null;
+  try {
+    installedHash = JSON.parse(fs.readFileSync(DEPS_MARKER, "utf8")).hash;
+  } catch {
+    /* no marker: never installed by this script, or install did not finish */
+  }
+  const nodeModulesExists = fs.existsSync(path.join(SERVER, "node_modules"));
+  if (!needsDepsInstall({ nodeModulesExists, currentHash, installedHash })) return;
+  if (dryRun) {
+    console.log("would run: npm ci --prefix server");
+    return;
+  }
+  console.log("installing server dependencies: npm ci --prefix server");
+  // npm is a .cmd shim on Windows, which Node only spawns through a shell.
+  // Fixed arguments, no user input.
+  if (run("npm", ["ci", "--prefix", "server"], { shell: process.platform === "win32" }).status !== 0) {
+    throw new Error("npm ci failed; not restarting. Re-run to retry the install.");
+  }
+  fs.writeFileSync(DEPS_MARKER, JSON.stringify({ hash: currentHash, installedAt: new Date().toISOString() }));
 }
 
 // Spawn the restart helper outside Claude's process tree (WMI parents it to
-// the WMI provider host, not to us), with its window hidden.
+// the WMI provider host, not to us), with its window hidden. The command line
+// is built from process.execPath and this file's path, both absolute paths
+// that cannot contain a double quote on Windows.
 function launchHelper(logFile, dryRun) {
-  const args = [process.execPath, SELF, "--restart-helper", ...(dryRun ? ["--dry-run"] : [])];
+  const args = [process.execPath, SELF, "--restart-helper", "--log", logFile, ...(dryRun ? ["--dry-run"] : [])];
   const commandLine = args.map((a) => `"${a}"`).join(" ");
   powershell(
     "$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 };" +
       "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ " +
       "CommandLine = $env:CB_HELPER_CMD; CurrentDirectory = $env:CB_HELPER_CWD; ProcessStartupInformation = $si };" +
       "if ($r.ReturnValue -ne 0) { throw \"Win32_Process.Create returned $($r.ReturnValue)\" }",
-    { ...process.env, CB_HELPER_CMD: commandLine, CB_HELPER_CWD: ROOT, CB_RESTART_LOG: logFile }
+    { ...process.env, CB_HELPER_CMD: commandLine, CB_HELPER_CWD: ROOT }
   );
 }
 
 // Runs detached: stop Claude Desktop, wait for it to be gone, relaunch it.
-function restartHelper(dryRun) {
-  const logFile = path.join(os.tmpdir(), "codex-broker-restart.log");
+function restartHelper(logFile, dryRun) {
   const log = (m) => fs.appendFileSync(logFile, `${new Date().toISOString()} ${m}\n`);
+  let target = null;
+  let stopBegan = false;
+  let relaunched = false;
+  const relaunch = () => {
+    run(target.launch[0], target.launch.slice(1), { capture: true }); // explorer's exit code is meaningless
+    relaunched = true;
+  };
   try {
     log(`helper start pid=${process.pid}${dryRun ? " (dry run)" : ""}`);
     sleep(1500); // let the invoking script print and exit
-    const target = detectTarget();
-    if (!target) throw new Error("Claude Desktop install not found (no Store app, no %LOCALAPPDATA%\\AnthropicClaude)");
-    let procs = selectAppProcesses(claudeProcesses(), { target, env: process.env });
-    const roots = rootProcesses(procs);
-    log(`target=${target.kind} launch=${target.launch.join(" ")} processes=${procs.length} roots=${roots.map((p) => p.ProcessId).join(",")}`);
+    target = detectTarget();
+    if (!target) throw new Error(`Anthropic's Claude package (publisher ${ANTHROPIC_PUBLISHER_ID}) is not installed`);
+    const current = () => selectAppProcesses(claudeProcesses(), { target, env: process.env });
+    let procs = current();
+    log(`package=${target.family} at ${target.installLocation}; ${procs.length} process(es); relaunch: ${target.launch.join(" ")}`);
     if (dryRun) {
+      for (const line of stopProcesses(stopOrder(procs), true)) log(line);
       log("dry run: nothing stopped or launched");
       return;
     }
-    for (const p of roots) run("taskkill.exe", ["/PID", String(p.ProcessId), "/T", "/F"], { capture: true });
-    for (let i = 0; i < 30; i++) {
-      procs = selectAppProcesses(claudeProcesses(), { target, env: process.env });
-      if (procs.length === 0) break;
-      if (i === 10) for (const p of procs) run("taskkill.exe", ["/PID", String(p.ProcessId), "/T", "/F"], { capture: true });
+    stopBegan = true;
+    for (let round = 0; round < 30 && procs.length; round++) {
+      // Main process first; children usually exit with it. Re-select every
+      // round so each kill uses a fresh identity.
+      if (round % 4 === 0) for (const line of stopProcesses(stopOrder(procs), false)) log(line);
       sleep(500);
+      procs = current();
     }
-    if (procs.length) throw new Error(`still running after 15s: ${procs.map((p) => p.ProcessId).join(",")}`);
+    if (procs.length) throw new Error(`still running after 15s: ${procs.map((p) => `${p.ProcessId} ${p.ExecutablePath}`).join("; ")}`);
     log("all Claude Desktop processes stopped");
-    run(target.launch[0], target.launch.slice(1), { capture: true }); // explorer's exit code is meaningless
+    relaunch();
     for (let i = 0; i < 40; i++) {
       sleep(500);
-      if (selectAppProcesses(claudeProcesses(), { target, env: process.env }).length) {
+      if (current().length) {
         log("Claude Desktop relaunched");
         return;
       }
     }
-    throw new Error("relaunch requested but no Claude process appeared within 20s; start Claude from the Start menu");
+    throw new Error("relaunch requested but no Claude process appeared within 20s");
   } catch (e) {
     log(`ERROR ${e.message}`);
     process.exitCode = 1;
+  } finally {
+    if (stopBegan && !relaunched && target) {
+      try {
+        relaunch();
+        log("recovery: relaunch requested after the error above");
+      } catch (e) {
+        log(`recovery relaunch failed: ${e.message}`);
+      }
+    }
+    if (process.exitCode) {
+      log(
+        "If Claude does not start: open it from the Start menu. If that fails too, some Desktop builds " +
+          "reportedly need `Restart-Service CoworkVMService` from an administrator PowerShell after a quit."
+      );
+    }
   }
 }
 
 function main() {
   const opts = parseArgs(process.argv.slice(2));
-  if (opts.helper) return restartHelper(opts.dryRun);
+  const logFile = opts.log || path.join(os.tmpdir(), "codex-broker-restart.log");
+  if (opts.helper) return restartHelper(logFile, opts.dryRun);
 
   if (opts.pull) {
     if (opts.dryRun) console.log("would run: git pull --ff-only");
     else {
       const r = pull();
-      console.log(r.updated ? `pulled ${r.before.slice(0, 7)}..${r.after.slice(0, 7)} (${r.changed.length} files)` : "already up to date");
-      if (needsDepsInstall(r.changed, fs.existsSync(path.join(ROOT, "server", "node_modules")))) {
-        console.log("server dependencies changed: npm ci --prefix server");
-        // npm is a .cmd shim on Windows, which Node only spawns through a shell.
-        // Fixed arguments, no user input.
-        if (run("npm", ["ci", "--prefix", "server"], { shell: process.platform === "win32" }).status !== 0) {
-          throw new Error("npm ci failed; not restarting");
-        }
-      }
+      console.log(r.updated ? `pulled ${r.before.slice(0, 7)}..${r.after.slice(0, 7)}` : "already up to date");
     }
   }
+  if (opts.pull || opts.tests) ensureDeps(opts.dryRun);
 
   if (opts.tests) {
     if (opts.dryRun) console.log("would run: node server/test/run-tests.mjs");
-    else if (run(process.execPath, ["test/run-tests.mjs"], { cwd: path.join(ROOT, "server") }).status !== 0) {
+    else if (run(process.execPath, ["test/run-tests.mjs"], { cwd: SERVER }).status !== 0) {
       throw new Error("tests failed; not restarting. The running broker is unchanged until the next app restart.");
     }
   }
@@ -254,10 +336,9 @@ function main() {
     return;
   }
   const target = detectTarget();
-  if (!target) throw new Error("Claude Desktop install not found; restart it by hand");
+  if (!target) throw new Error("Claude Desktop (Anthropic's MSIX package) not found; restart it by hand");
   const procs = selectAppProcesses(claudeProcesses(), { target, env: process.env });
-  console.log(`Claude Desktop (${target.kind}): ${procs.length} process(es) to stop, relaunch via ${target.launch.join(" ")}`);
-  const logFile = path.join(os.tmpdir(), "codex-broker-restart.log");
+  console.log(`Claude Desktop ${target.family}: ${procs.length} process(es) to stop, relaunch via ${target.launch.join(" ")}`);
   if (process.env.CLAUDECODE) {
     console.log("Running inside a Claude session: this session will end with the app. Reopen it once Claude is back.");
   }

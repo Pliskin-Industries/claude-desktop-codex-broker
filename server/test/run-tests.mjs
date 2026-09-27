@@ -17,11 +17,13 @@ import {
 import { buildResumeArgs, buildReviewArgs, buildTaskArgs } from "../lib/codex.mjs";
 import { applyChanges, report as configReport } from "../../scripts/configure-codex.mjs";
 import {
+  ANTHROPIC_PUBLISHER_ID,
+  depsHash,
   needsDepsInstall,
   parseArgs as updaterArgs,
   pickLaunchTarget,
-  rootProcesses,
   selectAppProcesses,
+  stopOrder,
 } from "../../scripts/update-broker.mjs";
 import { correlate, errorBuckets, findJob, report as forensicsReport } from "../lib/forensics.mjs";
 
@@ -618,33 +620,48 @@ async function main() {
     const metaFile = path.join(dir, "meta.json");
     const meta = { argv: Array.from({ length: 400 }, (_, i) => `arg-${i}`), n: 0 };
     writeMeta(metaFile, meta);
+    // The reader signals "ready" once loaded and reads until the stop file
+    // appears, so its loop provably spans the writer's; it also counts the
+    // distinct versions it saw, which proves the reads were concurrent.
+    const stopFile = path.join(dir, "stop");
     const reader = spawn(
       process.execPath,
       [
         "--input-type=module",
         "-e",
-        `const { readJsonSafe } = await import(${JSON.stringify(jobsUrl)});` +
-          `let bad=0,reads=0;const end=Date.now()+1500;` +
-          `while(Date.now()<end){readJsonSafe(process.argv[1])===null?bad++:reads++}` +
-          `process.stdout.write(JSON.stringify({bad,reads}))`,
+        `const fs = await import("node:fs");` +
+          `const { readJsonSafe } = await import(${JSON.stringify(jobsUrl)});` +
+          `let bad=0,reads=0;const seen=new Set();process.stdout.write("ready\\n");` +
+          `while(!fs.existsSync(process.argv[2])){const m=readJsonSafe(process.argv[1]);if(m===null)bad++;else{reads++;seen.add(m.n)}}` +
+          `process.stdout.write(JSON.stringify({bad,reads,versions:seen.size}))`,
         metaFile,
+        stopFile,
       ],
       { env: childEnv, stdio: ["ignore", "pipe", "ignore"] }
     );
     let out = "";
-    reader.stdout.on("data", (d) => (out += d));
+    const ready = new Promise((resolve) =>
+      reader.stdout.on("data", (d) => {
+        out += d;
+        if (out.includes("ready\n")) resolve();
+      })
+    );
     const done = new Promise((resolve) => reader.on("exit", resolve));
+    await Promise.race([ready, sleep(15000)]);
+    assert(out.includes("ready\n"), "reader never started");
     const until = Date.now() + 1300;
     while (Date.now() < until) {
       meta.n++;
       writeMeta(metaFile, meta);
       await new Promise((r) => setImmediate(r));
     }
+    fs.writeFileSync(stopFile, "");
     await done;
-    const { bad, reads } = JSON.parse(out);
-    assert(reads > 0, "reader never completed a read");
+    const { bad, reads, versions } = JSON.parse(out.slice(out.indexOf("ready\n") + 6));
+    assert(versions > 1, `reader saw ${versions} version(s) of meta.json, so the reads were not concurrent with the writes`);
     assert(bad === 0, `${bad} of ${bad + reads} concurrent reads saw a partial meta.json`);
-    assert(fs.readdirSync(dir).length === 1, `temp files left behind: ${fs.readdirSync(dir).join(", ")}`);
+    const left = fs.readdirSync(dir).filter((f) => f !== "stop");
+    assert(left.length === 1, `temp files left behind: ${left.join(", ")}`);
   });
 
   await test("codex_status reports idle time and warns once output goes quiet", async () => {
@@ -699,55 +716,69 @@ async function main() {
     assert(rv.isError && /max_idle_seconds/.test(rv.text), `review accepted bad value: ${rv.text}`);
   });
 
-  await test("update-broker stops only Claude Desktop's processes and relaunches the right app", async () => {
-    const env = { ProgramFiles: "C:\\Program Files", APPDATA: "C:\\Users\\u\\AppData\\Roaming", LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local" };
-    const store = pickLaunchTarget({
-      startApps: [{ Name: "Claude", AppID: "Claude_pzs8sxrjxfjjc!Claude" }],
-      env,
-      exists: () => false,
-    });
-    assert(store.kind === "store", `expected store, got ${store && store.kind}`);
-    assert(store.launch.join(" ") === "explorer.exe shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude", `launch: ${store.launch}`);
+  await test("update-broker trusts only Anthropic's Claude package and stops only its processes", async () => {
+    const W = (p) => p.replace(/\//g, "\\"); // write paths with "/", test them as Windows paths
+    const pub = ANTHROPIC_PUBLISHER_ID;
+    const env = { APPDATA: W("C:/Users/u/AppData/Roaming") };
+    const real = {
+      Name: "Claude",
+      PublisherId: pub,
+      PackageFamilyName: `Claude_${pub}`,
+      InstallLocation: W(`D:/WindowsApps/Claude_2.9939.2.0_x64__${pub}`),
+      AppIds: ["Claude", "SshAskpass"],
+    };
+    const lookalike = { ...real, PublisherId: "aaaaaaaaaaaaa", PackageFamilyName: "Claude_aaaaaaaaaaaaa", InstallLocation: W("C:/Program Files/WindowsApps/Claude_9.9.9.9_x64__aaaaaaaaaaaaa") };
+    // A lookalike listed first must not win, and alone must not qualify.
+    const target = pickLaunchTarget([lookalike, real]);
+    assert(target && target.family === `Claude_${pub}`, `wrong package trusted: ${JSON.stringify(target)}`);
+    assert(target.launch.join(" ") === `explorer.exe shell:AppsFolder${W("/")}Claude_${pub}!Claude`, `launch: ${target.launch}`);
+    assert(pickLaunchTarget([lookalike]) === null, "a package from another publisher was trusted");
+    assert(pickLaunchTarget([{ ...real, AppIds: ["Other"] }]) === null, "package without the Claude app id was trusted");
+    assert(pickLaunchTarget([]) === null, "no package should yield null");
 
+    const pkg = (v) => `D:/WindowsApps/Claude_${v}_x64__${pub}`;
     const procs = [
-      { ProcessId: 10, ParentProcessId: 1, ExecutablePath: "C:\\Program Files\\WindowsApps\\Claude_2.9939.2.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe" },
-      { ProcessId: 11, ParentProcessId: 10, ExecutablePath: "C:\\Program Files\\WindowsApps\\Claude_2.9939.2.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe" },
-      { ProcessId: 12, ParentProcessId: 10, ExecutablePath: "C:\\Users\\u\\AppData\\Roaming\\Claude\\claude-code\\2.1.281\\claude.exe" },
-      // Must survive: a standalone Claude Code CLI, another publisher's lookalike, a prefix-only match, no path.
-      { ProcessId: 20, ParentProcessId: 2, ExecutablePath: "C:\\Users\\u\\.local\\bin\\claude.exe" },
-      { ProcessId: 21, ParentProcessId: 2, ExecutablePath: "C:\\Program Files\\WindowsApps\\Claude_1.0.0.0_x64__evilpublisher\\claude.exe" },
-      { ProcessId: 22, ParentProcessId: 2, ExecutablePath: "C:\\Users\\u\\AppData\\Roaming\\Claude\\claude-code-evil\\claude.exe" },
-      { ProcessId: 23, ParentProcessId: 2, ExecutablePath: null },
+      { ProcessId: 10, ParentProcessId: 1, ExecutablePath: W(`${pkg("2.9939.2.0")}/app/Claude.exe`) },
+      { ProcessId: 11, ParentProcessId: 10, ExecutablePath: W(`${pkg("2.9939.2.0")}/app/Claude.exe`) },
+      // The package moved to D: and the app updated past the running version: still Claude's.
+      { ProcessId: 13, ParentProcessId: 10, ExecutablePath: W(`${pkg("2.9900.0.0")}/app/Claude.exe`) },
+      { ProcessId: 12, ParentProcessId: 10, ExecutablePath: W("C:/Users/u/AppData/Roaming/Claude/claude-code/2.1.281/claude.exe") },
+      // Must survive: children of a Claude session, a standalone CLI, another publisher,
+      // prefix-only lookalikes, no path.
+      { ProcessId: 20, ParentProcessId: 12, ExecutablePath: W("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe") },
+      { ProcessId: 21, ParentProcessId: 12, ExecutablePath: W("C:/Users/u/.local/bin/claude.exe") },
+      { ProcessId: 22, ParentProcessId: 2, ExecutablePath: W("D:/WindowsApps/Claude_1.0.0.0_x64__aaaaaaaaaaaaa/claude.exe") },
+      { ProcessId: 23, ParentProcessId: 2, ExecutablePath: W(`D:/WindowsApps/Claude_1.0.0.0_x64__${pub}evil/claude.exe`) },
+      { ProcessId: 24, ParentProcessId: 2, ExecutablePath: W("C:/Users/u/AppData/Roaming/Claude/claude-code-evil/claude.exe") },
+      { ProcessId: 25, ParentProcessId: 2, ExecutablePath: W(`D:/WindowsAppsEvil/Claude_1_x64__${pub}/claude.exe`) },
+      { ProcessId: 26, ParentProcessId: 2, ExecutablePath: null },
     ];
-    const picked = selectAppProcesses(procs, { target: store, env }).map((p) => p.ProcessId);
-    assert(picked.join(",") === "10,11,12", `wrong processes selected: ${picked}`);
-    const roots = rootProcesses(selectAppProcesses(procs, { target: store, env })).map((p) => p.ProcessId);
-    assert(roots.join(",") === "10", `wrong roots: ${roots}`);
-
-    const direct = pickLaunchTarget({ startApps: [], env, exists: (p) => p === "C:\\Users\\u\\AppData\\Local\\AnthropicClaude\\claude.exe" });
-    assert(direct.kind === "direct", `expected direct, got ${direct && direct.kind}`);
-    const dp = [
-      { ProcessId: 30, ParentProcessId: 1, ExecutablePath: "C:\\Users\\u\\AppData\\Local\\AnthropicClaude\\app-1.2.3\\claude.exe" },
-      { ProcessId: 31, ParentProcessId: 1, ExecutablePath: "C:\\Users\\u\\AppData\\Local\\AnthropicClaudeEvil\\claude.exe" },
-    ];
-    assert(selectAppProcesses(dp, { target: direct, env }).map((p) => p.ProcessId).join(",") === "30", "direct install selection wrong");
-    assert(pickLaunchTarget({ startApps: [], env, exists: () => false }) === null, "no install should yield null");
+    const picked = selectAppProcesses(procs, { target, env });
+    assert(picked.map((p) => p.ProcessId).join(",") === "10,11,13,12", `wrong processes selected: ${picked.map((p) => p.ProcessId)}`);
+    // Stop order: the main process first, then its selected children; nothing else.
+    assert(stopOrder(picked).map((p) => p.ProcessId).join(",") === "10,11,13,12", `stop order: ${stopOrder(picked).map((p) => p.ProcessId)}`);
   });
 
-  await test("update-broker reinstalls deps only when needed and rejects unknown flags", async () => {
-    assert(!needsDepsInstall(["README.md", "server/lib/jobs.mjs"], true), "docs/code change should not reinstall");
-    assert(needsDepsInstall(["server/package-lock.json"], true), "lockfile change must reinstall");
-    assert(needsDepsInstall(["server\\package.json"], true), "backslash paths must match");
-    assert(needsDepsInstall([], false), "missing node_modules must install");
+  await test("update-broker reinstalls deps until an install succeeds, and rejects unknown flags", async () => {
+    const h = depsHash("pkg", "lock");
+    assert(h === depsHash("pkg", "lock") && h !== depsHash("pkg", "lock2"), "hash must follow the lockfile");
+    assert(depsHash("ab", "c") !== depsHash("a", "bc"), "hash must separate the two files");
+    assert(!needsDepsInstall({ nodeModulesExists: true, currentHash: h, installedHash: h }), "installed and current: no reinstall");
+    assert(needsDepsInstall({ nodeModulesExists: true, currentHash: h, installedHash: null }), "no marker (failed or first install) must install");
+    assert(needsDepsInstall({ nodeModulesExists: true, currentHash: h, installedHash: "old" }), "changed deps must install");
+    assert(needsDepsInstall({ nodeModulesExists: false, currentHash: h, installedHash: h }), "missing node_modules must install");
     const o = updaterArgs(["--restart-only", "--dry-run"]);
     assert(!o.pull && !o.tests && o.restart && o.dryRun, `restart-only parse: ${JSON.stringify(o)}`);
-    let threw = false;
-    try {
-      updaterArgs(["--force"]);
-    } catch {
-      threw = true;
+    assert(updaterArgs(["--restart-helper", "--log", path.resolve("x.log")]).log === path.resolve("x.log"), "--log not parsed");
+    for (const bad of [["--force"], ["--log"], ["--log", "relative.log"]]) {
+      let threw = false;
+      try {
+        updaterArgs(bad);
+      } catch {
+        threw = true;
+      }
+      assert(threw, `should reject ${bad.join(" ")}`);
     }
-    assert(threw, "unknown flag must be rejected");
   });
 
   await test("configure-codex applies keep-awake, https-only, model and effort idempotently", async () => {

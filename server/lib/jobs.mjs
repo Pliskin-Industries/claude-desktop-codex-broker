@@ -264,7 +264,13 @@ export function writeMeta(metaFile, meta) {
       sleepSync(5 * (attempt + 1));
     }
   }
-  fs.rmSync(tmp, { force: true });
+  // Cleanup must never stand between us and the update: a scanner holding the
+  // temp file without delete sharing makes rmSync throw EPERM too.
+  try {
+    fs.rmSync(tmp, { force: true });
+  } catch {
+    /* a leftover .tmp is harmless; nothing reads it */
+  }
   fs.writeFileSync(metaFile, body);
 }
 
