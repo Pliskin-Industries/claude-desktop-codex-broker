@@ -7,6 +7,7 @@
 //   node scripts/update-broker.mjs --no-restart    # update and test, restart later
 //   node scripts/update-broker.mjs --dry-run       # show what would happen; change nothing
 //   node scripts/update-broker.mjs --skip-tests    # skip the test gate (not recommended)
+//   node scripts/update-broker.mjs --deps-only     # just install server deps if the lockfile changed
 //
 // Why a script: the extension's server process never restarts on its own
 // (docs/LESSONS.md #3), a tray quit does not always end every Claude process,
@@ -60,6 +61,7 @@ export function parseArgs(argv) {
     else if (a === "--skip-tests") opts.tests = false;
     else if (a === "--no-restart") opts.restart = false;
     else if (a === "--restart-only") Object.assign(opts, { pull: false, tests: false, restart: true });
+    else if (a === "--deps-only") Object.assign(opts, { pull: false, tests: false, restart: false, depsOnly: true });
     else if (a === "--dry-run") opts.dryRun = true;
     else if (a === "--restart-helper") opts.helper = true;
     else if (a === "--log") {
@@ -222,9 +224,11 @@ function ensureDeps(dryRun) {
     return;
   }
   console.log("installing server dependencies: npm ci --prefix server");
-  // npm is a .cmd shim on Windows, which Node only spawns through a shell.
-  // Fixed arguments, no user input.
-  if (run("npm", ["ci", "--prefix", "server"], { shell: process.platform === "win32" }).status !== 0) {
+  // npm is a .cmd shim on Windows, which Node only spawns through a shell; a
+  // fixed command string with no user input (args beside shell:true are
+  // deprecated because they are concatenated unescaped).
+  const npm = process.platform === "win32" ? run("npm ci --prefix server", [], { shell: true }) : run("npm", ["ci", "--prefix", "server"]);
+  if (npm.status !== 0) {
     throw new Error("npm ci failed; not restarting. Re-run to retry the install.");
   }
   fs.writeFileSync(DEPS_MARKER, JSON.stringify({ hash: currentHash, installedAt: new Date().toISOString() }));
@@ -321,7 +325,11 @@ function main() {
       console.log(r.updated ? `pulled ${r.before.slice(0, 7)}..${r.after.slice(0, 7)}` : "already up to date");
     }
   }
-  if (opts.pull || opts.tests) ensureDeps(opts.dryRun);
+  if (opts.pull || opts.tests || opts.depsOnly) ensureDeps(opts.dryRun);
+  if (opts.depsOnly) {
+    if (!opts.dryRun) console.log("server dependencies match the lockfile");
+    return;
+  }
 
   if (opts.tests) {
     if (opts.dryRun) console.log("would run: node server/test/run-tests.mjs");

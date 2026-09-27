@@ -338,7 +338,8 @@ async function main() {
     const un = sandboxVerdict(doc("unelevated", "complete"), "win32");
     assert(un.status === "fail" && /sandbox setup --elevated --current-user/.test(un.fix), `unelevated must fail with the setup command: ${JSON.stringify(un)}`);
     assert(sandboxVerdict(doc(undefined, undefined), "win32").status === "fail", "unset backend must fail");
-    assert(sandboxVerdict(null, "win32").status === "warn", "no doctor output is a warning, not a pass");
+    assert(sandboxVerdict(null, "win32").status === "fail", "unreadable doctor output must fail closed, never report Ready");
+    assert(sandboxVerdict({ checks: {} }, "win32").status === "fail", "a doctor report without the sandbox check must fail closed");
     assert(sandboxVerdict(null, "linux").status === "ok", "non-Windows skips the check");
     assert(doctorExit([{ status: "ok" }, { status: "warn" }]) === 0 && doctorExit([{ status: "ok" }, { status: "fail" }]) === 1, "exit code");
   });
@@ -810,6 +811,8 @@ async function main() {
     assert(needsDepsInstall({ nodeModulesExists: false, currentHash: h, installedHash: h }), "missing node_modules must install");
     const o = updaterArgs(["--restart-only", "--dry-run"]);
     assert(!o.pull && !o.tests && o.restart && o.dryRun, `restart-only parse: ${JSON.stringify(o)}`);
+    const d = updaterArgs(["--deps-only"]);
+    assert(d.depsOnly && !d.pull && !d.tests && !d.restart, `deps-only must install and nothing else: ${JSON.stringify(d)}`);
     assert(updaterArgs(["--restart-helper", "--log", path.resolve("x.log")]).log === path.resolve("x.log"), "--log not parsed");
     for (const bad of [["--force"], ["--log"], ["--log", "relative.log"]]) {
       let threw = false;

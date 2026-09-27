@@ -113,19 +113,27 @@ if (Get-Command gh -ErrorAction SilentlyContinue) {
 }
 
 Step 'Codex CLI'
-$codexCmd = Join-Path $env:APPDATA 'npm\codex.cmd'
+# The shim lives in npm's global prefix, which is %APPDATA%\npm unless the
+# user configured another one; ask npm rather than assume.
+$npmPrefix = (Invoke-Native npm.cmd @('prefix', '-g')).Out.Trim()
+if (-not $npmPrefix) { throw 'could not read the npm global prefix (npm.cmd prefix -g)' }
+$codexCmd = Join-Path $npmPrefix 'codex.cmd'
 $codexVersion = $null
 if (Test-Path $codexCmd) { $codexVersion = Get-Version (Invoke-Native $codexCmd @('--version')).Out }
 if (-not $codexVersion -or $codexVersion -lt $minCodex) {
   Info "installing @openai/codex (need $minCodex or later)"
   Npm install -g '@openai/codex@latest'
+  if (-not (Test-Path $codexCmd)) { throw "npm reported success but $codexCmd is missing" }
   $codexVersion = Get-Version (Invoke-Native $codexCmd @('--version')).Out
+  if (-not $codexVersion -or $codexVersion -lt $minCodex) { throw "Codex at $codexCmd is still older than $minCodex" }
 }
-Info "codex-cli $codexVersion"
+Info "codex-cli $codexVersion ($codexCmd)"
 
 Step 'Broker server dependencies'
-if (Test-Path (Join-Path $repo 'server\node_modules\@modelcontextprotocol\sdk')) { Info 'already installed' }
-else { Npm ci --prefix server }
+# Installs from the lockfile only when it changed since the last recorded
+# install (or none was recorded), so a pulled lockfile update isn't skipped.
+$deps = Invoke-Native node @((Join-Path $repo 'scripts\update-broker.mjs'), '--deps-only') -Interactive
+if (-not $deps.Ok) { throw 'installing server dependencies failed (node scripts\update-broker.mjs --deps-only)' }
 
 Step 'Codex login'
 $login = Invoke-Native $codexCmd @('login', 'status')
@@ -156,8 +164,14 @@ if ($sandboxOk) {
   $isAdminAccount = $me.Groups.Value -contains 'S-1-5-32-544'
   $setupCmd = "& `"$codexCmd`" sandbox setup --elevated --current-user"
   if (-not $isAdminAccount) {
-    Warn "your account isn't an administrator. Ask an administrator to run, from an elevated PowerShell signed in as you:"
-    Warn "  $setupCmd"
+    # UAC with another account's credentials runs as that account, so
+    # --current-user would provision the administrator, not you. Codex's
+    # managed-deployment form names the user and their Codex home instead.
+    $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE '.codex' }
+    Warn "your account isn't an administrator, so this script can't provision the sandbox for you."
+    Warn 'Ask an administrator to run this from an elevated PowerShell (it targets your account explicitly):'
+    Warn "  & `"$codexCmd`" sandbox setup --elevated --user `"$($me.Name)`" --codex-home `"$codexHome`""
+    Warn '(Codex documents this form for managed deployments; this project has only tested --current-user.)'
   } else {
     Info 'Codex runs its commands as dedicated sandbox users; creating them needs one administrator approval.'
     $answer = Read-Host '    Run the sandbox setup now (a UAC prompt will appear)? [Y/n]'

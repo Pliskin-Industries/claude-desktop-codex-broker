@@ -13,13 +13,13 @@
 // invisible to an app started before the install (#10).
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { computeCodexBinary } from "../server/lib/util.mjs";
+import { computeCodexBinary, resolveGhBinary, resolveGitBinary } from "../server/lib/util.mjs";
 import { configPath, report as codexConfigReport } from "./configure-codex.mjs";
+import { depsHash } from "./update-broker.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
@@ -46,7 +46,15 @@ export function versionAtLeast(v, min) {
 export function sandboxVerdict(doctorJson, platform) {
   if (platform !== "win32") return { status: "ok", summary: "not Windows; Codex uses the OS sandbox" };
   const details = doctorJson?.checks?.["sandbox.helpers"]?.details;
-  if (!details) return { status: "warn", summary: "codex doctor did not report sandbox details; check `codex doctor` by hand" };
+  // Fail closed: an unreadable verdict is not evidence the sandbox works, and
+  // "Ready" over a missing sandbox is exactly the silent failure of LESSONS #11.
+  if (!details) {
+    return {
+      status: "fail",
+      summary: "could not read the sandbox state from `codex doctor --json`",
+      fix: "run `codex.cmd doctor` and check its sandbox section shows backend elevated, provisioning complete",
+    };
+  }
   const backend = details["sandbox backend"];
   const provisioning = details["sandbox provisioning"];
   if (backend === "elevated" && provisioning === "complete") {
@@ -69,9 +77,11 @@ export function exitCode(results) {
 
 // --- probes -------------------------------------------------------------------
 
-function probe(cmd, args) {
-  const r = spawnSync(cmd, args, { encoding: "utf8", windowsHide: true, timeout: 60000 });
-  return { ok: !r.error && r.status === 0, status: r.status, out: `${r.stdout || ""}${r.stderr || ""}`.trim(), error: r.error };
+function probe(cmd, args, opts = {}) {
+  const r = spawnSync(cmd, args, { encoding: "utf8", windowsHide: true, timeout: 60000, ...opts });
+  const stdout = (r.stdout || "").trim();
+  const stderr = (r.stderr || "").trim();
+  return { ok: !r.error && r.status === 0, status: r.status, stdout, stderr, out: [stdout, stderr].filter(Boolean).join("\n"), error: r.error };
 }
 
 function checkNode() {
@@ -81,13 +91,47 @@ function checkNode() {
     : { id: "node", status: "fail", summary: `${process.version} is older than 18.18`, fix: "winget install OpenJS.NodeJS.LTS, then open a new terminal" };
 }
 
-function checkServerDeps() {
-  const req = createRequire(path.join(ROOT, "server", "server.mjs"));
+// Load the SDK the way the server does (ESM, resolved from server/), so a
+// partial install that left the entry file but not its dependencies fails
+// here instead of at broker start.
+function checkServerDeps(viaPlugin) {
+  const load = probe(
+    process.execPath,
+    ["--input-type=module", "-e", 'await import("@modelcontextprotocol/sdk/server/index.js"); await import("@modelcontextprotocol/sdk/server/stdio.js");'],
+    { cwd: path.join(ROOT, "server") }
+  );
+  if (!load.ok) {
+    return {
+      id: "server-deps",
+      status: "fail",
+      summary: `the MCP SDK does not load from server/: ${(load.stderr.split(/\r?\n/).find((l) => /Error/.test(l)) || load.out || "unknown error").slice(0, 200)}`,
+      fix: viaPlugin
+        ? 'npm ci --ignore-scripts --prefix "<plugin root>", then /reload-plugins'
+        : "node scripts/update-broker.mjs --deps-only (from the broker checkout)",
+    };
+  }
+  // The plugin's install is Claude Code's own `npm ci` from the lockfile; a
+  // checkout's is recorded by update-broker with a fingerprint of the lockfile.
+  if (viaPlugin) return { id: "server-deps", status: "ok", summary: "MCP SDK loads" };
+  const fresh = depsFreshness();
+  return fresh === "current"
+    ? { id: "server-deps", status: "ok", summary: "MCP SDK loads; installed from the current lockfile" }
+    : {
+        id: "server-deps",
+        status: "warn",
+        summary: fresh === "stale" ? "installed from an older lockfile" : "MCP SDK loads, but the install isn't recorded against the lockfile",
+        fix: "node scripts/update-broker.mjs --deps-only (reinstalls from the lockfile and records it)",
+      };
+}
+
+function depsFreshness() {
+  const server = path.join(ROOT, "server");
   try {
-    req.resolve("@modelcontextprotocol/sdk/server/index.js");
-    return { id: "server-deps", status: "ok", summary: "@modelcontextprotocol/sdk resolves from server/" };
+    const current = depsHash(fs.readFileSync(path.join(server, "package.json")), fs.readFileSync(path.join(server, "package-lock.json")));
+    const installed = JSON.parse(fs.readFileSync(path.join(server, "node_modules", ".codex-broker-deps.json"), "utf8")).hash;
+    return installed === current ? "current" : "stale";
   } catch {
-    return { id: "server-deps", status: "fail", summary: "@modelcontextprotocol/sdk not installed; the broker cannot start", fix: "npm ci --prefix server (from the broker checkout)" };
+    return "unrecorded";
   }
 }
 
@@ -129,7 +173,7 @@ function checkSandbox(bin) {
   const r = probe(bin, ["doctor", "--json"]);
   let json = null;
   try {
-    json = JSON.parse(r.out.slice(r.out.indexOf("{")));
+    json = JSON.parse(r.stdout); // stdout only: a stderr diagnostic must not corrupt the JSON
   } catch {
     /* fall through to the verdict's own "no details" case */
   }
@@ -150,15 +194,29 @@ function checkCodexConfig() {
       };
 }
 
+// git and gh are probed through the broker's own resolvers, so GIT_BIN /
+// GH_BIN overrides and the Windows install-location search are what's checked.
 function checkGit() {
-  const r = probe("git", ["--version"]);
-  return r.ok ? { id: "git", status: "ok", summary: r.out } : { id: "git", status: "fail", summary: "git not on PATH", fix: "winget install Git.Git" };
+  let bin;
+  try {
+    bin = resolveGitBinary();
+  } catch (e) {
+    return { id: "git", status: "fail", summary: e.message, fix: "fix or unset GIT_BIN" };
+  }
+  const r = probe(bin, ["--version"]);
+  return r.ok ? { id: "git", status: "ok", summary: `${r.stdout} (${bin})` } : { id: "git", status: "fail", summary: `cannot run ${bin}`, fix: "winget install Git.Git" };
 }
 
 function checkGh() {
-  const v = probe("gh", ["--version"]);
+  let bin;
+  try {
+    bin = resolveGhBinary();
+  } catch (e) {
+    return { id: "gh", status: "warn", summary: e.message, fix: "fix or unset GH_BIN" };
+  }
+  const v = probe(bin, ["--version"]);
   if (!v.ok) return { id: "gh", status: "warn", summary: "GitHub CLI not found; only the gh_* tools need it", fix: "winget install GitHub.cli, then gh auth login" };
-  const auth = probe("gh", ["auth", "status"]);
+  const auth = probe(bin, ["auth", "status"]);
   return auth.ok
     ? { id: "gh", status: "ok", summary: v.out.split(/\r?\n/)[0] + ", logged in" }
     : { id: "gh", status: "warn", summary: "GitHub CLI not logged in", fix: "gh auth login" };
@@ -177,7 +235,7 @@ function checkSkill(viaPlugin) {
 }
 
 export function runChecks({ viaPlugin = false } = {}) {
-  const results = [checkNode(), checkServerDeps()];
+  const results = [checkNode(), checkServerDeps(viaPlugin)];
   const { codex, bin } = checkCodex();
   results.push(codex);
   if (bin && codex.status !== "fail") results.push(checkLogin(bin), checkSandbox(bin));

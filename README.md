@@ -42,8 +42,15 @@ not committed to the repo — CI builds them from source on each tagged version.
 
 ## Quick start — prerequisites on Windows (one command)
 
+If Git isn't installed yet, install it first and **open a new PowerShell window** afterwards (a running window doesn't see newly installed programs):
+
 ```powershell
 winget install Git.Git
+```
+
+Then, in a new window:
+
+```powershell
 git clone https://github.com/Pliskin-Industries/claude-desktop-codex-broker.git
 cd claude-desktop-codex-broker
 powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
