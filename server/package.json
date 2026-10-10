@@ -11,6 +11,6 @@
     "test": "node test/run-tests.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.31.0"
   }
 }
